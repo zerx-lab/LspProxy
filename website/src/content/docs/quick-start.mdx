@@ -1,0 +1,150 @@
+# 快速开始
+
+本页面帮助你在 5 分钟内让 LspProxy 运行起来。
+
+import { Steps, Callout } from 'nextra/components'
+
+<Steps>
+
+### 安装 lsp-proxy
+
+```bash
+go install github.com/zerx-lab/LspProxy@latest
+```
+
+验证安装成功：
+
+```bash
+lsp-proxy --help
+```
+
+### 选择翻译引擎
+
+**Google 翻译（零配置，推荐先试用）**
+
+无需任何配置，跳过此步直接进入下一步。
+
+**OpenAI 兼容 API（更高质量）**
+
+创建配置文件 `~/.config/lsp-proxy/config.yaml`：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "your-api-key"
+    model: "deepseek-chat"
+```
+
+### 在编辑器中配置
+
+将你的 LSP 命令替换为 `lsp-proxy -- <原命令>`。
+
+**Neovim（nvim-lspconfig）**
+
+```lua
+-- 原来的配置
+require('lspconfig').rust_analyzer.setup({})
+
+-- 改为（添加 cmd 字段）
+require('lspconfig').rust_analyzer.setup({
+  cmd = { 'lsp-proxy', '--', 'rust-analyzer' },
+})
+```
+
+**VSCode**
+
+在 `.vscode/settings.json` 中：
+
+```json
+{
+  "rust-analyzer.server.path": "/path/to/lsp-proxy",
+  "rust-analyzer.server.extraEnv": {}
+}
+```
+
+<Callout type="info">
+  更多编辑器的详细配置请参考[编辑器集成](/docs/editors)页面。
+</Callout>
+
+### 打开编辑器验证
+
+在编辑器中打开项目，将鼠标悬停在任意函数或变量上，文档应以中文显示。
+
+</Steps>
+
+---
+
+## 代理模式 CLI 用法
+
+最基本的用法：在 `--` 之后传入 LSP 服务器命令及其参数。
+
+```bash
+# 代理 rust-analyzer
+lsp-proxy -- rust-analyzer
+
+# 代理 clangd，并传入额外参数
+lsp-proxy -- clangd --background-index --clang-tidy
+
+# 代理 gopls
+lsp-proxy -- gopls serve
+
+# 代理 pyright
+lsp-proxy -- pyright-langserver --stdio
+
+# 代理 typescript-language-server
+lsp-proxy -- typescript-language-server --stdio
+```
+
+<Callout type="warning">
+  `--` 分隔符是必须的，用于区分 lsp-proxy 自身的参数和 LSP 服务器的参数。
+</Callout>
+
+---
+
+## 所有 CLI 标志
+
+| 标志 | 简写 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--config <path>` | — | `~/.config/lsp-proxy/config.yaml` | 指定配置文件路径 |
+| `--engine <name>` | `-e` | 配置文件中的值 | 覆盖翻译引擎（`google` \| `openai`） |
+| `--tui` | — | `false` | 启动 TUI 管理界面 |
+
+### `--config`
+
+指定自定义配置文件路径。适用于多项目使用不同配置的场景：
+
+```bash
+# 项目 A 使用 Google 翻译
+lsp-proxy --config ~/.config/lsp-proxy/project-a.yaml -- rust-analyzer
+
+# 项目 B 使用 DeepSeek
+lsp-proxy --config ~/.config/lsp-proxy/project-b.yaml -- gopls
+```
+
+### `-e` / `--engine`
+
+临时覆盖翻译引擎，无需修改配置文件。优先级高于配置文件：
+
+```bash
+# 临时切换到 OpenAI 引擎
+lsp-proxy -e openai -- rust-analyzer
+
+# 明确使用 Google 免费接口
+lsp-proxy --engine google -- clangd
+```
+
+### `--tui`
+
+启动 TUI（终端用户界面）管理界面，用于可视化配置和查看实时日志：
+
+```bash
+lsp-proxy --tui
+```
+
+TUI 界面支持：
+- 查看和修改所有配置项
+- 实时日志流
+- 翻译引擎状态监控
+- 保存配置到文件

@@ -1,0 +1,42 @@
+# 编译产物
+LspProxy
+lsp-proxy
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go 工具链缓存
+/vendor/
+/dist/
+
+# 配置文件（可能含密钥）
+config.yaml
+config.yml
+*.local.yaml
+*.local.yml
+.env
+.env.*
+
+# 日志文件
+*.log
+logs/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 翻译词典缓存（本地生成）
+*.dict.json
+
+# website 构建产物
+website/.next/
+website/out/
+website/node_modules/

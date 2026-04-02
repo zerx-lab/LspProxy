@@ -1,0 +1,171 @@
+package translate
+
+import (
+	"container/list"
+	"context"
+	"sync"
+)
+
+// Engine 是翻译引擎接口，所有翻译后端均需实现此接口
+type Engine interface {
+	// Translate 将 text 翻译为 targetLang 所指定的语言
+	Translate(ctx context.Context, text, targetLang string) (string, error)
+	// Name 返回引擎名称，用于日志和调试
+	Name() string
+}
+
+// cacheKey 是 LRU 缓存的键，由原文和目标语言共同构成
+type cacheKey struct {
+	text       string
+	targetLang string
+}
+
+// cacheEntry 是存储在双向链表节点中的缓存条目
+type cacheEntry struct {
+	key      cacheKey
+	value    string
+	byteSize int64 // 该条目占用的估算字节数
+}
+
+const (
+	// DefaultMemoryLimit 默认内存缓存上限：30MB
+	DefaultMemoryLimit int64 = 30 * 1024 * 1024
+)
+
+// CachedEngine 是带 LRU 缓存的翻译引擎包装器。
+// 缓存上限由内存字节数控制（默认 30MB），而非条目数量。
+// 相同的原文 + 目标语言组合命中缓存时，直接返回缓存结果，不再调用底层引擎。
+type CachedEngine struct {
+	engine      Engine
+	memoryLimit int64 // 内存缓存字节上限
+
+	mu          sync.Mutex
+	items       map[cacheKey]*list.Element // 键 → 链表节点
+	order       *list.List                 // 双向链表，头部为最近使用，尾部为最久未使用
+	currentSize int64                      // 当前缓存占用字节数
+}
+
+// NewCachedEngine 创建一个带 LRU 缓存的翻译引擎包装器。
+// memoryLimit 为缓存最大字节数，<= 0 时使用默认值 30MB。
+func NewCachedEngine(engine Engine, memoryLimit int64) *CachedEngine {
+	if memoryLimit <= 0 {
+		memoryLimit = DefaultMemoryLimit
+	}
+	return &CachedEngine{
+		engine:      engine,
+		memoryLimit: memoryLimit,
+		items:       make(map[cacheKey]*list.Element),
+		order:       list.New(),
+	}
+}
+
+// entrySize 估算一个缓存条目的字节占用（key + value 的字符串字节数 + 固定开销）
+func entrySize(key cacheKey, value string) int64 {
+	// 字符串本身的字节 + 结构体固定字段开销（约 64 字节）
+	return int64(len(key.text)+len(key.targetLang)+len(value)) + 64
+}
+
+// Translate 先查询内存缓存，命中则直接返回；未命中则调用底层引擎并将结果写入内存缓存。
+func (c *CachedEngine) Translate(ctx context.Context, text, targetLang string) (string, error) {
+	key := cacheKey{text: text, targetLang: targetLang}
+
+	// --- 读取内存缓存（加锁）---
+	c.mu.Lock()
+	if elem, ok := c.items[key]; ok {
+		c.order.MoveToFront(elem)
+		result := elem.Value.(*cacheEntry).value
+		c.mu.Unlock()
+		return result, nil
+	}
+	c.mu.Unlock()
+
+	// --- 内存缓存未命中：调用底层引擎（不持锁，避免阻塞其他 goroutine）---
+	result, err := c.engine.Translate(ctx, text, targetLang)
+	if err != nil {
+		return "", err
+	}
+
+	// --- 写入内存缓存（加锁）---
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 二次检查：可能在释放锁期间已有其他 goroutine 写入了相同 key
+	if elem, ok := c.items[key]; ok {
+		c.order.MoveToFront(elem)
+		return elem.Value.(*cacheEntry).value, nil
+	}
+
+	size := entrySize(key, result)
+
+	// 若单条条目本身超过内存上限，则不缓存（直接返回结果）
+	if size > c.memoryLimit {
+		return result, nil
+	}
+
+	// 驱逐尾部条目直到腾出足够空间
+	for c.currentSize+size > c.memoryLimit && c.order.Len() > 0 {
+		c.evict()
+	}
+
+	// 将新条目插入链表头部
+	entry := &cacheEntry{key: key, value: result, byteSize: size}
+	elem := c.order.PushFront(entry)
+	c.items[key] = elem
+	c.currentSize += size
+
+	return result, nil
+}
+
+// Put 将外部获取的翻译结果（如磁盘词典命中）写入内存缓存。
+// 若内存已满则 LRU 驱逐，若单条超限则不缓存。
+func (c *CachedEngine) Put(text, targetLang, value string) {
+	key := cacheKey{text: text, targetLang: targetLang}
+	size := entrySize(key, value)
+	if size > c.memoryLimit {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, ok := c.items[key]; ok {
+		return // 已存在，无需重复写入
+	}
+
+	for c.currentSize+size > c.memoryLimit && c.order.Len() > 0 {
+		c.evict()
+	}
+
+	entry := &cacheEntry{key: key, value: value, byteSize: size}
+	elem := c.order.PushFront(entry)
+	c.items[key] = elem
+	c.currentSize += size
+}
+
+// Name 返回底层引擎名称（带缓存标识）
+func (c *CachedEngine) Name() string {
+	return c.engine.Name() + "(cached)"
+}
+
+// Stats 返回当前内存缓存的统计信息（条目数、字节数）
+func (c *CachedEngine) Stats() (count int, bytes int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items), c.currentSize
+}
+
+// evict 驱逐链表尾部（最久未使用）的缓存条目。
+// 调用方必须持有 c.mu 锁。
+func (c *CachedEngine) evict() {
+	tail := c.order.Back()
+	if tail == nil {
+		return
+	}
+	entry := tail.Value.(*cacheEntry)
+	delete(c.items, entry.key)
+	c.order.Remove(tail)
+	c.currentSize -= entry.byteSize
+	if c.currentSize < 0 {
+		c.currentSize = 0
+	}
+}

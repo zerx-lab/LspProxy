@@ -1,0 +1,46 @@
+# 简介
+
+**LspProxy** 是一个 LSP（Language Server Protocol）中文翻译代理。它以透明代理方式插入编辑器与真实 LSP 进程之间，将 hover、completion、diagnostics、signatureHelp 等消息中的英文文档**实时翻译为中文**，无需修改任何编辑器插件。
+
+## 工作原理
+
+```
+编辑器 stdin  ──► [lsp-proxy] ──► lsp stdin
+编辑器 stdout ◄── [lsp-proxy] ◄── lsp stdout
+                      ↑
+                   翻译处理
+```
+
+`lsp-proxy` 完整转发所有 LSP 消息，仅对包含文档字段的响应进行翻译处理。翻译过程对编辑器完全透明——编辑器感知不到代理的存在。
+
+## 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **透明代理** | 不修改 LSP 协议，编辑器无需适配 |
+| **Markdown 分割** | 仅翻译文本段，代码块保持原样 |
+| **三级缓存** | 内存 LRU → 磁盘词典 → 在线翻译，极速响应 |
+| **多翻译引擎** | Google 免费接口 / OpenAI 兼容 API |
+| **超时保护** | 翻译超时自动返回原文，后台继续预热缓存 |
+| **多编辑器** | VSCode、Neovim、Zed 及所有支持 LSP stdio 的编辑器 |
+| **零依赖** | 纯 Go 实现，单二进制，跨平台 |
+
+## 翻译覆盖范围
+
+LspProxy 翻译以下 LSP 消息类型中的文档字段：
+
+- `textDocument/hover` — 悬停文档
+- `textDocument/completion` — 补全项文档
+- `textDocument/signatureHelp` — 函数签名文档
+- `textDocument/publishDiagnostics` — 诊断错误信息
+
+## 快速导航
+
+import { Cards } from 'nextra/components'
+
+<Cards>
+  <Cards.Card title="快速开始 →" href="/docs/quick-start" />
+  <Cards.Card title="安装指南 →" href="/docs/installation" />
+  <Cards.Card title="配置参考 →" href="/docs/configuration" />
+  <Cards.Card title="编辑器集成 →" href="/docs/editors" />
+</Cards>

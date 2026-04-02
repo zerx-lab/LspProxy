@@ -1,0 +1,236 @@
+# 翻译引擎
+
+LspProxy 内置两种翻译引擎，通过配置文件或 `-e` 标志选择。
+
+import { Callout, Tabs } from 'nextra/components'
+
+---
+
+## 引擎对比
+
+| | Google | OpenAI 兼容 |
+|---|---|---|
+| **费用** | 免费 | 按 Token 计费 |
+| **API Key** | 不需要 | 需要 |
+| **翻译质量** | 良好 | 优秀（取决于模型） |
+| **延迟** | 低（~100–300ms） | 中高（取决于服务和模型） |
+| **离线支持** | 不支持 | 支持（本地 Ollama） |
+| **上下文理解** | 无 | 有（技术术语更准确） |
+| **适用场景** | 快速试用、日常使用 | 高质量翻译需求 |
+
+---
+
+## Google 翻译
+
+使用 Google 免费翻译 API，无需注册账号或申请密钥。
+
+### 配置
+
+```yaml
+translate:
+  engine: google
+```
+
+或通过命令行：
+
+```bash
+lsp-proxy -e google -- rust-analyzer
+```
+
+### 特点
+
+- **零配置**：直接使用，无需任何密钥
+- **速度快**：通常 100–300ms 完成翻译
+- **稳定可靠**：Google 基础设施，高可用
+- **免费**：无请求频率或用量限制（非官方 API，请勿滥用）
+
+### 注意事项
+
+<Callout type="warning">
+  此接口为非官方 API，Google 可能随时调整。如需稳定的生产环境，建议使用 OpenAI 兼容引擎。
+</Callout>
+
+---
+
+## OpenAI 兼容引擎
+
+支持任何实现了 OpenAI Chat Completions API（`/v1/chat/completions`）的服务。
+
+### 基本配置
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key: "sk-..."
+    model: "gpt-4o-mini"
+```
+
+---
+
+### 支持的服务
+
+<Tabs items={['DeepSeek', 'Qwen（阿里云）', 'Ollama（本地）', 'OpenAI', '自定义']}>
+  <Tabs.Tab>
+
+[DeepSeek](https://platform.deepseek.com/) 提供高质量、低价格的中文翻译能力：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-your-deepseek-key"
+    model: "deepseek-chat"
+```
+
+```bash
+lsp-proxy -e openai -- rust-analyzer
+```
+
+**推荐理由：** 对中文支持极佳，价格远低于 OpenAI，`deepseek-chat` 模型延迟适中。
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+[阿里云百炼平台](https://bailian.console.aliyun.com/) 提供 Qwen 系列模型：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    api_key: "sk-your-qwen-key"
+    model: "qwen-turbo"
+```
+
+可选模型：
+- `qwen-turbo` — 速度快，价格低
+- `qwen-plus` — 质量更高
+- `qwen-max` — 最高质量
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+[Ollama](https://ollama.ai/) 在本地运行开源模型，完全离线，无需网络和 API Key：
+
+```bash
+# 先安装并启动 Ollama，拉取模型
+ollama pull llama3.2
+```
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "http://localhost:11434/v1"
+    api_key: ""        # Ollama 不需要密钥，留空
+    model: "llama3.2"
+```
+
+<Callout type="info">
+  本地模型延迟较高，建议将 `proxy.translation_timeout` 设为 `0`（无限等待）或调大至 `3000` 以上，避免频繁返回原文。
+
+  ```yaml
+  proxy:
+    translation_timeout: 0
+  ```
+</Callout>
+
+**推荐本地模型：**
+
+| 模型 | 中文能力 | 速度 | 内存需求 |
+|------|----------|------|----------|
+| `llama3.2` | 良好 | 快 | ~2GB |
+| `qwen2.5:7b` | 优秀 | 中 | ~4GB |
+| `qwen2.5:14b` | 卓越 | 慢 | ~8GB |
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+直接使用 OpenAI 官方 API：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key: "sk-your-openai-key"
+    model: "gpt-4o-mini"
+```
+
+推荐使用 `gpt-4o-mini`，性价比最高，翻译质量优秀。
+
+  </Tabs.Tab>
+  <Tabs.Tab>
+
+任何兼容 OpenAI Chat Completions API 的服务均可使用：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    base_url: "https://your-custom-endpoint.com/v1"
+    api_key: "your-key"
+    model: "your-model"
+```
+
+需满足：接口路径为 `/v1/chat/completions`，请求/响应格式符合 OpenAI 规范。
+
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## 三级缓存机制
+
+无论使用哪种翻译引擎，LspProxy 均自动启用三级缓存，大幅减少实际 API 调用次数：
+
+```
+请求翻译
+    │
+    ▼
+┌─────────────────────────────┐
+│  1. 内存 LRU 缓存           │ ──命中──► 立即返回（<1ms）
+│     (默认 30MB，进程内有效)  │
+└──────────────┬──────────────┘
+               │ 未命中
+               ▼
+┌─────────────────────────────┐
+│  2. 磁盘词典缓存            │ ──命中──► 返回 + 写入内存（<5ms）
+│     (JSON 文件，跨进程持久) │
+└──────────────┬──────────────┘
+               │ 未命中
+               ▼
+┌─────────────────────────────┐
+│  3. 在线翻译 API            │ ──完成──► 返回 + 写入磁盘和内存
+│     (Google / OpenAI)       │
+└─────────────────────────────┘
+```
+
+**超时保护：** 若在线翻译超过 `proxy.translation_timeout`（默认 600ms），立即返回原文并在后台继续翻译。下次请求相同内容时直接命中缓存。
+
+---
+
+## 切换引擎
+
+可通过以下方式切换翻译引擎，优先级从高到低：
+
+**1. 命令行标志（临时，最高优先级）**
+
+```bash
+lsp-proxy -e openai -- rust-analyzer
+lsp-proxy --engine google -- gopls
+```
+
+**2. 配置文件（持久）**
+
+```yaml
+translate:
+  engine: openai
+```
+
+**3. 内置默认值（最低优先级）**
+
+未配置时默认使用 `google`。

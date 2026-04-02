@@ -1,0 +1,276 @@
+# 配置参考
+
+LspProxy 使用 YAML 格式的配置文件。
+
+**默认路径：** `~/.config/lsp-proxy/config.yaml`
+
+配置文件不存在时，所有选项均使用内置默认值，无需手动创建即可运行。
+
+import { Callout } from 'nextra/components'
+
+---
+
+## 完整配置示例
+
+```yaml
+# ~/.config/lsp-proxy/config.yaml
+
+translate:
+  # 翻译引擎：google（默认）或 openai
+  engine: google
+
+  # OpenAI 兼容接口配置（engine 为 openai 时生效）
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key: ""
+    model: "gpt-4o-mini"
+
+proxy:
+  # 目标语言
+  target_lang: "zh-CN"
+
+  # 内存缓存大小（MB）
+  cache_size: 30
+
+  # 磁盘词典文件路径
+  dict_file: "~/.local/share/lsp-proxy/dict.json"
+
+  # 翻译超时（毫秒），0 表示无限等待
+  translation_timeout: 600
+
+log:
+  # 日志级别：debug | info | warn | error
+  level: info
+
+  # 日志文件路径
+  file: "~/.local/share/lsp-proxy/proxy.log"
+```
+
+---
+
+## `translate` — 翻译引擎
+
+### `translate.engine`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `"google"` |
+| 可选值 | `"google"` \| `"openai"` |
+
+指定使用的翻译后端。
+
+- `google`：使用 Google 免费翻译 API，无需任何密钥，开箱即用。
+- `openai`：使用 OpenAI 兼容 API，支持 DeepSeek、Qwen、Ollama 等任何兼容 OpenAI Chat Completions 接口的服务。
+
+```yaml
+translate:
+  engine: google
+```
+
+<Callout>
+  命令行标志 `-e` / `--engine` 可临时覆盖此配置，优先级更高。
+</Callout>
+
+---
+
+### `translate.openai.base_url`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `"https://api.openai.com/v1"` |
+
+OpenAI 兼容 API 的基础地址。使用第三方服务时需修改此值：
+
+```yaml
+translate:
+  engine: openai
+  openai:
+    # DeepSeek
+    base_url: "https://api.deepseek.com/v1"
+
+    # 阿里云 Qwen
+    # base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    # 本地 Ollama
+    # base_url: "http://localhost:11434/v1"
+```
+
+---
+
+### `translate.openai.api_key`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `""` |
+
+API 认证密钥。使用 Ollama 等不需要鉴权的本地服务时可留空。
+
+<Callout type="warning">
+  避免将密钥直接写入配置文件并提交到版本控制。建议通过环境变量注入或使用 `.gitignore` 排除配置文件。
+</Callout>
+
+---
+
+### `translate.openai.model`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `"gpt-4o-mini"` |
+
+使用的模型名称，需与 `base_url` 对应的服务支持的模型一致：
+
+```yaml
+translate:
+  openai:
+    model: "deepseek-chat"       # DeepSeek
+    # model: "qwen-turbo"        # Qwen
+    # model: "llama3.2"          # Ollama
+    # model: "gpt-4o-mini"       # OpenAI
+```
+
+---
+
+## `proxy` — 代理行为
+
+### `proxy.target_lang`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `"zh-CN"` |
+
+翻译的目标语言，使用 BCP 47 语言标签格式。
+
+```yaml
+proxy:
+  target_lang: "zh-CN"   # 简体中文（默认）
+  # target_lang: "zh-TW" # 繁体中文
+  # target_lang: "ja"    # 日语
+```
+
+---
+
+### `proxy.cache_size`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `integer` |
+| 默认值 | `30` |
+| 单位 | MB |
+
+内存 LRU 缓存的最大占用量（单位：MB）。超出上限时自动驱逐最久未使用的条目。
+
+缓存有效避免重复调用翻译 API，对同一个符号的文档只翻译一次：
+
+```yaml
+proxy:
+  cache_size: 30    # 30MB，适合大多数项目
+  # cache_size: 60  # 超大型项目可适当增加
+  # cache_size: 10  # 内存敏感环境可减小
+```
+
+---
+
+### `proxy.dict_file`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `~/.local/share/lsp-proxy/dict.json` |
+
+磁盘词典文件路径（JSON 格式）。磁盘词典作为二级持久化缓存：进程重启后内存缓存清空，但磁盘词典中的翻译结果仍然保留，下次启动无需重新翻译。
+
+**三级缓存查询顺序：**
+1. **内存 LRU**（最快，进程内有效）
+2. **磁盘词典**（持久化，跨进程有效）
+3. **在线翻译 API**（最慢，网络请求）
+
+```yaml
+proxy:
+  dict_file: "~/.local/share/lsp-proxy/dict.json"
+```
+
+---
+
+### `proxy.translation_timeout`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `integer` |
+| 默认值 | `600` |
+| 单位 | 毫秒 |
+
+单次翻译请求的最大等待时间。
+
+- `0`：无限等待，直到翻译完成或出错
+- 正整数：等待指定毫秒数后，若翻译尚未完成则**立即返回原文**，并在后台继续翻译以预热缓存
+
+```yaml
+proxy:
+  translation_timeout: 600   # 600ms（默认）
+  # translation_timeout: 0   # 无限等待（适合高延迟网络）
+  # translation_timeout: 200 # 极低延迟优先（频繁返回原文）
+  # translation_timeout: 1000 # 适合速度较慢的 API
+```
+
+<Callout type="info">
+  对于本地 Ollama 等延迟较高的模型，建议将此值设为 `0` 或调大至 `2000` 以上，避免频繁返回原文。
+</Callout>
+
+---
+
+## `log` — 日志
+
+### `log.level`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `"info"` |
+| 可选值 | `"debug"` \| `"info"` \| `"warn"` \| `"error"` |
+
+日志输出级别：
+
+| 级别 | 说明 |
+|------|------|
+| `debug` | 输出所有调试信息，包括每条翻译请求和缓存命中详情，附带源码行号 |
+| `info` | 输出关键运行信息（默认） |
+| `warn` | 仅输出警告和错误 |
+| `error` | 仅输出错误 |
+
+```yaml
+log:
+  level: info   # 正常使用
+  # level: debug  # 排查问题时使用
+```
+
+<Callout type="warning">
+  `debug` 级别会产生大量日志，长期运行可能导致日志文件迅速增大。
+</Callout>
+
+---
+
+### `log.file`
+
+| 属性 | 值 |
+|------|----|
+| 类型 | `string` |
+| 默认值 | `~/.local/share/lsp-proxy/proxy.log` |
+
+日志文件路径。日志以 JSON 格式写入文件，不会输出到 stdout（stdout 专用于 LSP 协议通信）。
+
+```yaml
+log:
+  file: "~/.local/share/lsp-proxy/proxy.log"
+  # file: "/tmp/lsp-proxy-debug.log"  # 临时调试路径
+```
+
+查看实时日志：
+
+```bash
+tail -f ~/.local/share/lsp-proxy/proxy.log | jq .
+```

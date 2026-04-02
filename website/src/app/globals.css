@@ -1,0 +1,87 @@
+@import "tailwindcss";
+@import "nextra-theme-docs/style.css";
+
+/* ── 设计 token（light） ────────────────────────── */
+:root {
+  --landing-topbar-height: 48px;
+
+  /* 背景层级 */
+  --bg-base:     #f8f8f6;
+  --bg-surface:  #f2f2ef;
+  --bg-code:     #ededea;
+  --bg-code-hd:  #e8e8e4;
+
+  /* 边框 */
+  --border:      rgba(0,0,0,0.07);
+  --border-subtle: rgba(0,0,0,0.04);
+
+  /* 文字 */
+  --fg-strong:   rgba(0,0,0,0.85);
+  --fg-base:     rgba(0,0,0,0.65);
+  --fg-muted:    rgba(0,0,0,0.38);
+  --fg-faint:    rgba(0,0,0,0.20);
+
+  /* 代码着色 */
+  --code-comment:  rgba(0,0,0,0.30);
+  --code-keyword:  #0070b8;
+  --code-string:   #147d55;
+  --code-default:  rgba(0,0,0,0.72);
+  --code-linenum:  rgba(0,0,0,0.18);
+
+  /* 滚动条 */
+  --scrollbar-thumb: rgba(0,0,0,0.14);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.25);
+  --scrollbar-track: rgba(0,0,0,0.03);
+
+  /* glow（light 下减弱） */
+  --glow-top:    rgba(99,102,241,0.07);
+  --glow-left:   rgba(14,165,233,0.05);
+  --glow-right:  rgba(139,92,246,0.05);
+  --grid-color:  rgba(0,0,0,0.04);
+}
+
+/* ── 设计 token（dark） ─────────────────────────── */
+.dark {
+  --bg-base:     #080808;
+  --bg-surface:  #0a0a0a;
+  --bg-code:     #0d0d0d;
+  --bg-code-hd:  rgba(255,255,255,0.02);
+
+  --border:      rgba(255,255,255,0.06);
+  --border-subtle: rgba(255,255,255,0.04);
+
+  --fg-strong:   rgba(255,255,255,0.88);
+  --fg-base:     rgba(255,255,255,0.65);
+  --fg-muted:    rgba(255,255,255,0.38);
+  --fg-faint:    rgba(255,255,255,0.18);
+
+  --code-comment:  rgba(255,255,255,0.25);
+  --code-keyword:  rgba(125,211,252,0.90);
+  --code-string:   rgba(110,231,183,0.80);
+  --code-default:  rgba(255,255,255,0.65);
+  --code-linenum:  rgba(255,255,255,0.13);
+
+  --scrollbar-thumb: rgba(255,255,255,0.13);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.26);
+  --scrollbar-track: rgba(255,255,255,0.03);
+
+  --glow-top:    rgba(99,102,241,0.12);
+  --glow-left:   rgba(14,165,233,0.06);
+  --glow-right:  rgba(139,92,246,0.06);
+  --grid-color:  rgba(255,255,255,0.04);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* ── 代码窗口滚动条美化 ─────────────────────────── */
+.code-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.code-scrollbar::-webkit-scrollbar        { height: 4px; width: 4px; }
+.code-scrollbar::-webkit-scrollbar-track  { background: var(--scrollbar-track); border-radius: 0 0 6px 6px; }
+.code-scrollbar::-webkit-scrollbar-thumb  { background: var(--scrollbar-thumb); border-radius: 2px; }
+.code-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+.code-scrollbar::-webkit-scrollbar-corner { background: transparent; }
