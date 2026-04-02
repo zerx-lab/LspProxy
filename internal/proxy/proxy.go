@@ -131,7 +131,10 @@ func (p *Proxy) forwardClientToLsp(
 	reader := bufio.NewReaderSize(clientReader, 1<<20) // 1 MiB 读缓冲
 
 	for {
-		// 检查 context 是否已取消
+		// 注意：ReadMessage 阻塞在 io.Reader 上，无法被 context 取消。
+		// 此处的 context 检查仅是"尽力而为"：只有在上一条消息处理完毕、
+		// 下一条消息尚未开始读取时才能响应取消信号。
+		// 实际退出依赖管道关闭（LSP 进程退出或 stdin 关闭）触发 EOF。
 		select {
 		case <-ctx.Done():
 			p.logger.Debug("forwardClientToLsp: context 已取消，退出")
@@ -227,7 +230,14 @@ func (p *Proxy) forwardLspToClient(
 	// asyncPush 供后台 goroutine（如诊断异步翻译）主动推送消息到客户端
 	asyncPush := func(data []byte) { enqueue(data) }
 
+	// 限制并发翻译 goroutine 数量，防止高频场景瞬间创建大量 goroutine
+	sem := make(chan struct{}, 32)
+
 	for {
+		// 注意：ReadMessage 阻塞在 io.Reader 上，无法被 context 取消。
+		// 此处的 context 检查仅是"尽力而为"：只有在上一条消息处理完毕、
+		// 下一条消息尚未开始读取时才能响应取消信号。
+		// 实际退出依赖管道关闭（LSP 进程退出或 stdin 关闭）触发 EOF。
 		select {
 		case <-ctx.Done():
 			p.logger.Debug("forwardLspToClient: context 已取消，退出")
@@ -250,7 +260,9 @@ func (p *Proxy) forwardLspToClient(
 		}
 
 		// 每帧独立 goroutine：翻译完成后投入 writeCh，不阻塞读取循环
+		sem <- struct{}{} // 获取信号量，限制并发翻译 goroutine 数量
 		go func(rawFrame []byte) {
+			defer func() { <-sem }() // 释放信号量
 			processed, err := handler.ProcessServerMessage(ctx, rawFrame, asyncPush)
 			if err != nil {
 				p.logger.Warn("处理 LSP 消息失败，原样透传",

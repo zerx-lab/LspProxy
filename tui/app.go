@@ -694,19 +694,39 @@ func readLastLines(path string, n int) ([]string, error) {
 	buf := make([]byte, 1<<20) // 1 MiB
 	scanner.Buffer(buf, 1<<20)
 
-	var lines []string
+	// 使用环形缓冲区，只保留最后 n 行，避免大文件全部读入内存
+	ring := make([]string, n)
+	idx := 0   // 下一次写入位置
+	total := 0 // 已读取的总行数
+
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		ring[idx] = scanner.Text()
+		idx = (idx + 1) % n
+		total++
 	}
 	if err := scanner.Err(); err != nil {
-		return lines, fmt.Errorf("读取日志内容失败: %w", err)
+		return nil, fmt.Errorf("读取日志内容失败: %w", err)
 	}
 
-	// 仅保留最后 n 行
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+	if total == 0 {
+		return nil, nil
 	}
-	return lines, nil
+
+	// 从环形缓冲区中按顺序提取结果
+	count := total
+	if count > n {
+		count = n
+	}
+	result := make([]string, 0, count)
+	start := 0
+	if total >= n {
+		start = idx // idx 指向最旧的一行
+	}
+	for i := 0; i < count; i++ {
+		result = append(result, ring[(start+i)%n])
+	}
+
+	return result, nil
 }
 
 // ────────────────────────────────────────────────────────────

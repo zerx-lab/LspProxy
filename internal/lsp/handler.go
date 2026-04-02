@@ -228,9 +228,6 @@ func (h *Handler) processResponse(ctx context.Context, msg *BaseMessage, raw []b
 			func(fastCtx context.Context) (json.RawMessage, error) {
 				return h.translateHover(fastCtx, msg.Result)
 			},
-			func(bgCtx context.Context) {
-				h.translateHover(bgCtx, msg.Result) //nolint:errcheck // 仅预热缓存
-			},
 		)
 
 	case "textDocument/completion":
@@ -238,18 +235,12 @@ func (h *Handler) processResponse(ctx context.Context, msg *BaseMessage, raw []b
 			func(fastCtx context.Context) (json.RawMessage, error) {
 				return h.translateCompletion(fastCtx, msg.Result)
 			},
-			func(bgCtx context.Context) {
-				h.translateCompletion(bgCtx, msg.Result) //nolint:errcheck
-			},
 		)
 
 	case "textDocument/signatureHelp":
 		return h.handleResponseWithFastPath(ctx, msg, raw, info,
 			func(fastCtx context.Context) (json.RawMessage, error) {
 				return h.translateSignatureHelp(fastCtx, msg.Result)
-			},
-			func(bgCtx context.Context) {
-				h.translateSignatureHelp(bgCtx, msg.Result) //nolint:errcheck
 			},
 		)
 
@@ -278,14 +269,12 @@ type translateResult struct {
 // 参数：
 //   - info:        原始请求的上下文（方法名、文件、位置），用于日志
 //   - translateFn: 翻译函数，接受一个 context（仅用于取消，不用于超时控制）
-//   - warmFn:      超时返回原文后，在后台 goroutine 中调用以确保缓存被填充
 func (h *Handler) handleResponseWithFastPath(
 	ctx context.Context,
 	msg *BaseMessage,
 	raw []byte,
 	info pendingInfo,
 	translateFn func(context.Context) (json.RawMessage, error),
-	warmFn func(context.Context),
 ) ([]byte, error) {
 	start := time.Now()
 
@@ -357,35 +346,23 @@ func (h *Handler) handleResponseWithFastPath(
 			slog.String("elapsed", fmtDuration(elapsed)),
 			slog.String("hint", "缓存预热后再次触发将直接返回中文"),
 		)
-		// 无需额外启动 warmFn goroutine：上面的翻译 goroutine 本身就在继续运行
-		// 此处启动 warmFn 仅作为安全兜底（防止翻译 goroutine 意外退出）
+		// 翻译 goroutine 仍在后台运行，阻塞等待其完成以写入缓存
 		go func() {
-			// 等待主翻译 goroutine 结束（channel 有缓冲，不会阻塞它）
-			select {
-			case res := <-ch:
-				if res.err == nil {
-					// 主翻译 goroutine 已完成并写入缓存，不需要再次调用 warmFn
-					h.logger.Info("后台缓存预热完成（翻译 goroutine）",
-						slog.String("method", shortMethod(info.Method)),
-						slog.String("file", uriBasename(info.URI)),
-						slog.Int("line", info.Line+1),
-						slog.String("elapsed", fmtDuration(time.Since(start))),
-					)
-					return
-				}
-			default:
+			res := <-ch
+			if res.err == nil {
+				h.logger.Info("后台缓存预热完成",
+					slog.String("method", shortMethod(info.Method)),
+					slog.String("file", uriBasename(info.URI)),
+					slog.Int("line", info.Line+1),
+					slog.String("elapsed", fmtDuration(time.Since(start))),
+				)
+			} else {
+				h.logger.Warn("后台缓存预热失败",
+					slog.String("method", shortMethod(info.Method)),
+					slog.String("file", uriBasename(info.URI)),
+					slog.String("error", res.err.Error()),
+				)
 			}
-			// 主翻译 goroutine 失败或尚未完成（不太可能），用 warmFn 兜底
-			warmStart := time.Now()
-			warmCtx, warmCancel := context.WithTimeout(context.Background(), asyncDiagTimeout)
-			defer warmCancel()
-			warmFn(warmCtx)
-			h.logger.Info("后台缓存预热完成（warmFn 兜底）",
-				slog.String("method", shortMethod(info.Method)),
-				slog.String("file", uriBasename(info.URI)),
-				slog.Int("line", info.Line+1),
-				slog.String("elapsed", fmtDuration(time.Since(warmStart))),
-			)
 		}()
 		return raw, nil
 	}
@@ -771,7 +748,7 @@ func (h *Handler) translateSignatureHelp(ctx context.Context, result json.RawMes
 		if len(sigHelp.Signatures[i].Documentation) == 0 {
 			continue
 		}
-		result, err := h.translateMarkupContent(ctx, sigHelp.Signatures[i].Documentation)
+		translatedDoc, err := h.translateMarkupContent(ctx, sigHelp.Signatures[i].Documentation)
 		if err != nil {
 			h.logger.Warn("翻译签名文档失败",
 				slog.String("label", sigHelp.Signatures[i].Label),
@@ -779,7 +756,7 @@ func (h *Handler) translateSignatureHelp(ctx context.Context, result json.RawMes
 			)
 			continue
 		}
-		sigHelp.Signatures[i].Documentation = result
+		sigHelp.Signatures[i].Documentation = translatedDoc
 		translated++
 	}
 
@@ -984,10 +961,9 @@ func shortMethod(method string) string {
 
 // truncate 将字符串截断到最多 n 个字符，超出部分用 "…" 替代。
 func truncate(s string, n int) string {
-	runes := []rune(s)
 	// 去掉换行，避免日志换行
 	clean := strings.ReplaceAll(s, "\n", " ")
-	runes = []rune(clean)
+	runes := []rune(clean)
 	if len(runes) <= n {
 		return clean
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -104,6 +105,11 @@ func runProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("初始化翻译引擎失败: %w", err)
 	}
 
+	// 若引擎实现了 io.Closer（如 DictEngine），在退出时关闭以确保资源释放和数据持久化
+	if closer, ok := engine.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
 	logger.Info("翻译引擎已初始化",
 		slog.String("engine", engine.Name()),
 		slog.String("targetLang", cfg.Proxy.TargetLang),
@@ -153,6 +159,7 @@ func buildFileLogger(cfg *config.Config) (*slog.Logger, *os.File, error) {
 // parseLogLevel 将配置字符串转换为 slog.Level。
 // 支持 "debug"、"info"（默认）、"warn"、"error"，不区分大小写。
 func parseLogLevel(level string) slog.Level {
+	level = strings.ToLower(level)
 	switch level {
 	case "debug":
 		return slog.LevelDebug

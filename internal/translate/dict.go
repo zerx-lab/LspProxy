@@ -8,14 +8,6 @@ import (
 	"sync"
 )
 
-// dictKey 是磁盘词典的键，格式为 "targetLang\x00text"
-// 使用 JSON 序列化时直接用复合字符串以保持兼容性
-type dictRecord struct {
-	Text       string `json:"t"`
-	TargetLang string `json:"l"`
-	Value      string `json:"v"`
-}
-
 // diskDictData 是 JSON 文件中存储的数据结构
 // key = targetLang + "\x00" + text，value = 翻译结果
 type diskDictData = map[string]string
@@ -26,11 +18,13 @@ type diskDictData = map[string]string
 type DiskDict struct {
 	path string
 
-	mu      sync.RWMutex
-	data    diskDictData  // 内存索引：key → 翻译值
-	dirty   bool          // 是否有未写盘的变更
-	writeCh chan struct{} // 写盘信号
-	stopCh  chan struct{} // 停止信号
+	mu         sync.RWMutex
+	data       diskDictData  // 内存索引：key → 翻译值
+	generation uint64        // 数据变更的代数计数器，每次 Put 自增
+	flushedGen uint64        // 已成功写盘的代数
+	writeCh    chan struct{} // 写盘信号
+	stopCh     chan struct{} // 停止信号
+	done       chan struct{} // writeLoop 退出信号
 }
 
 // NewDiskDict 创建并加载磁盘词典。
@@ -41,6 +35,7 @@ func NewDiskDict(path string) (*DiskDict, error) {
 		data:    make(diskDictData),
 		writeCh: make(chan struct{}, 1),
 		stopCh:  make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 
 	if err := d.load(); err != nil {
@@ -76,7 +71,7 @@ func (d *DiskDict) Put(text, targetLang, value string) {
 		return // 已存在且相同，无需写盘
 	}
 	d.data[key] = value
-	d.dirty = true
+	d.generation++
 	d.mu.Unlock()
 
 	// 非阻塞发送写盘信号（channel 有缓冲，避免重复写盘）
@@ -94,9 +89,11 @@ func (d *DiskDict) Len() int {
 	return n
 }
 
-// Close 停止后台写盘 goroutine 并做最后一次写盘
+// Close 停止后台写盘 goroutine 并做最后一次写盘。
+// 先等待 writeLoop 完全退出，再执行最终 flush，避免并发写盘竞争。
 func (d *DiskDict) Close() error {
 	close(d.stopCh)
+	<-d.done // 等待 writeLoop 退出
 	return d.flush()
 }
 
@@ -129,12 +126,15 @@ func (d *DiskDict) load() error {
 	return nil
 }
 
-// flush 将内存词典同步写入磁盘（原子写：先写临时文件再重命名）
+// flush 将内存词典同步写入磁盘（原子写：先写临时文件再重命名）。
+// 使用 generation 计数器避免 TOCTOU 竞态：flush 开始时记录当前 generation，
+// 写盘完成后仅当 generation 未被其他 goroutine 推进时才更新 flushedGen。
 func (d *DiskDict) flush() error {
 	d.mu.RLock()
-	if !d.dirty {
+	gen := d.generation
+	if gen == d.flushedGen {
 		d.mu.RUnlock()
-		return nil
+		return nil // 没有未写盘的变更
 	}
 	// 复制一份数据，避免长时间持锁
 	snapshot := make(diskDictData, len(d.data))
@@ -160,14 +160,20 @@ func (d *DiskDict) flush() error {
 		return err
 	}
 
+	// 只有当 generation 没有被其他 goroutine 推进时才更新 flushedGen，
+	// 否则说明在写盘期间有新数据写入，需要下次 flush 再处理。
 	d.mu.Lock()
-	d.dirty = false
+	if d.generation == gen {
+		d.flushedGen = gen
+	}
 	d.mu.Unlock()
 	return nil
 }
 
-// writeLoop 后台写盘循环，收到写盘信号时执行 flush
+// writeLoop 后台写盘循环，收到写盘信号时执行 flush。
+// 退出时关闭 done channel 通知 Close()。
 func (d *DiskDict) writeLoop() {
+	defer close(d.done)
 	for {
 		select {
 		case <-d.writeCh:
@@ -227,6 +233,11 @@ func (d *DictEngine) Translate(ctx context.Context, text, targetLang string) (st
 	d.mem.Put(text, targetLang, result)
 
 	return result, nil
+}
+
+// Close 关闭磁盘词典，停止后台写盘并做最终持久化。
+func (d *DictEngine) Close() error {
+	return d.disk.Close()
 }
 
 // Name 返回引擎名称

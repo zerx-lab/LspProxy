@@ -77,11 +77,6 @@ func defaultLogFile() string {
 	return filepath.Join(homeDir, ".local", "share", "lsp-proxy", "proxy.log")
 }
 
-// defaultDictFile 返回默认磁盘词典文件路径（内部使用）
-func defaultDictFile() string {
-	return DefaultDictFile()
-}
-
 // DefaultDictFile 返回默认磁盘词典文件路径 (~/.local/share/lsp-proxy/dict.json)
 func DefaultDictFile() string {
 	homeDir, err := os.UserHomeDir()
@@ -102,7 +97,7 @@ func setDefaults(v *viper.Viper) {
 	// 代理默认配置
 	v.SetDefault("proxy.target_lang", "zh-CN")
 	v.SetDefault("proxy.cache_size", 30) // 单位 MB
-	v.SetDefault("proxy.dict_file", defaultDictFile())
+	v.SetDefault("proxy.dict_file", DefaultDictFile())
 	v.SetDefault("proxy.translation_timeout", 600) // 单位毫秒，0 表示无限等待
 
 	// 日志默认配置

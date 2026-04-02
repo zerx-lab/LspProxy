@@ -12,7 +12,7 @@ import { Tabs } from 'nextra/components'
 ## 安装方式
 
 <Tabs items={['go install（推荐）', '源码编译', '预编译二进制']}>
-  <Tabs.Tab>
+<Tabs.Tab>
 
 使用 `go install` 直接安装到 `$GOPATH/bin`：
 
@@ -27,8 +27,8 @@ go install github.com/zerx-lab/LspProxy@latest
 ln -s $(go env GOPATH)/bin/LspProxy $(go env GOPATH)/bin/lsp-proxy
 ```
 
-  </Tabs.Tab>
-  <Tabs.Tab>
+</Tabs.Tab>
+<Tabs.Tab>
 
 克隆仓库后手动编译：
 
@@ -46,8 +46,8 @@ sudo mv lsp-proxy /usr/local/bin/
 mv lsp-proxy ~/.local/bin/
 ```
 
-  </Tabs.Tab>
-  <Tabs.Tab>
+</Tabs.Tab>
+<Tabs.Tab>
 
 从 [GitHub Releases](https://github.com/zerx-lab/LspProxy/releases) 下载对应平台的预编译二进制，解压后放入 PATH：
 
@@ -57,7 +57,7 @@ curl -L https://github.com/zerx-lab/LspProxy/releases/latest/download/lsp-proxy-
 sudo mv lsp-proxy /usr/local/bin/
 ```
 
-  </Tabs.Tab>
+</Tabs.Tab>
 </Tabs>
 
 ---
