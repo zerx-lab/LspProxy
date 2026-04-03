@@ -85,6 +85,8 @@ const (
 // CachedEngine 是带 LRU 缓存的翻译引擎包装器。
 // 缓存上限由内存字节数控制（默认 30MB），而非条目数量。
 // 相同的原文 + 目标语言组合命中缓存时，直接返回缓存结果，不再调用底层引擎。
+//
+// 职责：纯内存 LRU 缓存。并发合并（singleflight）由外层 [SingleflightEngine] 负责。
 type CachedEngine struct {
 	engine      Engine
 	memoryLimit int64 // 内存缓存字节上限
@@ -116,7 +118,9 @@ func entrySize(key cacheKey, value string) int64 {
 }
 
 // Translate 先查询内存缓存，命中则直接返回；未命中则调用底层引擎并将结果写入内存缓存。
+//
 // 缓存 key 经过 [NormalizeKey] 规范化，使语义等价的文本共享缓存。
+// 并发合并由外层 [SingleflightEngine] 负责，本层只做纯粹的缓存读写。
 func (c *CachedEngine) Translate(ctx context.Context, text, targetLang string) (string, error) {
 	key := cacheKey{text: NormalizeKey(text), targetLang: targetLang}
 
@@ -130,27 +134,33 @@ func (c *CachedEngine) Translate(ctx context.Context, text, targetLang string) (
 	}
 	c.mu.Unlock()
 
-	// --- 内存缓存未命中：调用底层引擎（不持锁，避免阻塞其他 goroutine）---
+	// --- 内存缓存未命中：调用底层引擎 ---
 	result, err := c.engine.Translate(ctx, text, targetLang)
 	if err != nil {
 		return "", err
 	}
 
-	// --- 写入内存缓存（加锁）---
+	// --- 写入内存缓存 ---
+	c.writeCache(key, result)
+
+	return result, nil
+}
+
+// writeCache 将翻译结果写入 LRU 内存缓存。
+// 若单条条目超过内存上限则不缓存；否则按 LRU 策略驱逐尾部条目后写入。
+// 调用方不需要持有锁。
+func (c *CachedEngine) writeCache(key cacheKey, result string) {
+	size := entrySize(key, result)
+	if size > c.memoryLimit {
+		return // 单条超限，不缓存
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// 二次检查：可能在释放锁期间已有其他 goroutine 写入了相同 key
-	if elem, ok := c.items[key]; ok {
-		c.order.MoveToFront(elem)
-		return elem.Value.(*cacheEntry).value, nil
-	}
-
-	size := entrySize(key, result)
-
-	// 若单条条目本身超过内存上限，则不缓存（直接返回结果）
-	if size > c.memoryLimit {
-		return result, nil
+	// 二次检查：可能已由其他路径（如 Put）写入了相同 key
+	if _, ok := c.items[key]; ok {
+		return
 	}
 
 	// 驱逐尾部条目直到腾出足够空间
@@ -163,8 +173,6 @@ func (c *CachedEngine) Translate(ctx context.Context, text, targetLang string) (
 	elem := c.order.PushFront(entry)
 	c.items[key] = elem
 	c.currentSize += size
-
-	return result, nil
 }
 
 // Put 将外部获取的翻译结果（如磁盘词典命中）写入内存缓存。
@@ -172,26 +180,7 @@ func (c *CachedEngine) Translate(ctx context.Context, text, targetLang string) (
 // key 经过 [NormalizeKey] 规范化。
 func (c *CachedEngine) Put(text, targetLang, value string) {
 	key := cacheKey{text: NormalizeKey(text), targetLang: targetLang}
-	size := entrySize(key, value)
-	if size > c.memoryLimit {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if _, ok := c.items[key]; ok {
-		return // 已存在，无需重复写入
-	}
-
-	for c.currentSize+size > c.memoryLimit && c.order.Len() > 0 {
-		c.evict()
-	}
-
-	entry := &cacheEntry{key: key, value: value, byteSize: size}
-	elem := c.order.PushFront(entry)
-	c.items[key] = elem
-	c.currentSize += size
+	c.writeCache(key, value)
 }
 
 // Name 返回底层引擎名称（带缓存标识）

@@ -43,10 +43,28 @@ type OpenAIConfig struct {
 	PromptFile string `mapstructure:"prompt_file"`
 }
 
+// DisplayMode 控制翻译结果的展示方式
+type DisplayMode string
+
+const (
+	// DisplayTranslationOnly 仅显示译文，完全替换原文（默认）
+	DisplayTranslationOnly DisplayMode = "translation_only"
+	// DisplayBilingual 双语模式：先显示译文，再附上原文（用分隔线区分），代码片段不重复
+	DisplayBilingual DisplayMode = "bilingual"
+	// DisplayBilingualCompare 双语对照模式：按段落交替显示原文/译文，便于逐段核对，代码片段不重复
+	DisplayBilingualCompare DisplayMode = "bilingual_compare"
+)
+
 // ProxyConfig 代理行为相关配置
 type ProxyConfig struct {
 	// TargetLang 目标翻译语言，默认 "zh-CN"
 	TargetLang string `mapstructure:"target_lang"`
+	// DisplayMode 翻译展示模式，默认 "translation_only"（仅译文）。
+	// 可选值：
+	//   "translation_only"    — 仅显示译文，完全替换原文
+	//   "bilingual"           — 双语：先显示译文，末尾附上原文（用分隔线区分）
+	//   "bilingual_compare"   — 双语对照：按段落交替显示原文/译文，代码片段不重复
+	DisplayMode DisplayMode `mapstructure:"display_mode"`
 	// CacheSize 内存 LRU 缓存上限（MB），默认 30MB；超出此上限时 LRU 驱逐最久未使用条目
 	CacheSize int `mapstructure:"cache_size"`
 	// DictFile 磁盘词典文件路径，默认 ~/.local/share/lsp-proxy/dict.json
@@ -135,6 +153,7 @@ func setDefaults(v *viper.Viper) {
 
 	// 代理默认配置
 	v.SetDefault("proxy.target_lang", "zh-CN")
+	v.SetDefault("proxy.display_mode", string(DisplayTranslationOnly))
 	v.SetDefault("proxy.cache_size", 30) // 单位 MB
 	v.SetDefault("proxy.dict_file", DefaultDictFile())
 	v.SetDefault("proxy.dict_max_entries", 100000) // 磁盘词典最大条目数
@@ -231,6 +250,7 @@ func (c *Config) Save(path string) error {
 	v.Set("translate.openai.thinking_mode", c.Translate.OpenAI.ThinkingMode)
 	v.Set("translate.openai.prompt_file", c.Translate.OpenAI.PromptFile)
 	v.Set("proxy.target_lang", c.Proxy.TargetLang)
+	v.Set("proxy.display_mode", string(c.Proxy.DisplayMode))
 	v.Set("proxy.cache_size", c.Proxy.CacheSize)
 	v.Set("proxy.dict_file", c.Proxy.DictFile)
 	v.Set("proxy.dict_max_entries", c.Proxy.DictMaxEntries)

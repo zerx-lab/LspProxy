@@ -51,10 +51,18 @@ const features = [
     extra: '$ LspProxy --tui',
     extraType: 'text',
   },
+  {
+    num: '07',
+    title: '双语对照',
+    desc: '三种显示模式：纯译文 / 译文+原文（分隔线）/ 逐段双语对照。诊断消息使用紧凑 // 格式并排。一行配置切换。',
+    extra: '',
+    extraType: 'bilingual',
+  },
 ];
 
 const configFeatures = [
   { key: 'translate.engine', val: 'google（默认）| openai（兼容 DeepSeek/Qwen/Ollama）' },
+  { key: 'proxy.display_mode', val: 'translation_only | bilingual | bilingual_compare' },
   { key: 'proxy.translation_timeout', val: '600ms 等待窗口（内置 50ms 快速路径）' },
   { key: 'proxy.cache_size', val: '内存 LRU 上限（MB）+ 磁盘 JSON 词典' },
   { key: 'log', val: '日志仅写文件，不污染 LSP 帧' },
@@ -117,6 +125,7 @@ const configCodeHtml = `<span class="syntax-comment"># LspProxy 配置文件</sp
     <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>
 
 <span class="syntax-var">proxy</span>:
+  <span class="syntax-var">display_mode</span>: <span class="syntax-string">bilingual</span>   <span class="syntax-comment"># translation_only | bilingual | bilingual_compare</span>
   <span class="syntax-var">cache_size</span>: <span class="syntax-num">30</span>          <span class="syntax-comment"># 内存上限（MB），默认 30</span>
   <span class="syntax-var">dict_file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/dict.json&quot;</span>
   <span class="syntax-var">translation_timeout</span>: <span class="syntax-num">600</span>  <span class="syntax-comment"># 毫秒，0 = 无限等待</span>
@@ -192,7 +201,7 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
         <p class="text-sm sm:text-base font-mono max-w-xl mx-auto leading-relaxed mb-10" style="color: var(--text-muted);">
           透明代理插入编辑器与 LSP 之间，<br />
           将 hover、completion、diagnostics 中的英文文档<br />
-          <span style="color: var(--text);">实时翻译为中文</span>，零侵入，零配置。
+          <span style="color: var(--text);">实时翻译为中文</span>，支持<span style="color: var(--text);"> 双语对照</span>，零侵入，零配置。
         </p>
 
         <!-- Install command -->
@@ -254,7 +263,7 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px rounded-lg overflow-hidden" style="background: var(--border-subtle); border: 1px solid var(--border-subtle);">
           {features.map(f => (
-            <div class="p-6 card-hover" style="background: var(--bg);">
+            <div class:list={['p-6 card-hover', f.extraType === 'bilingual' ? 'md:col-span-2 lg:col-span-3' : '']} style="background: var(--bg);">
               <p class="section-label mb-3">{f.num}</p>
               <h3 class="font-mono font-semibold mb-2" style="color: var(--text-heading);">{f.title}</h3>
               <p class="text-xs leading-relaxed font-mono" style="color: var(--text-dim);">{f.desc}</p>
@@ -285,6 +294,25 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
                   {engines.map(e => (
                     <span class="tag">{e}</span>
                   ))}
+                </div>
+              )}
+              {f.extraType === 'bilingual' && (
+                <div class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div class="p-2 border rounded text-xs font-mono" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+                    <span style="color: var(--text-dim);">translation_only</span>
+                    <span style="color: var(--text-dim);"> — </span>
+                    <span style="color: var(--text-muted);">仅显示中文译文</span>
+                  </div>
+                  <div class="p-2 border rounded text-xs font-mono" style="background: var(--bg-inset); border-color: rgba(34,197,94,0.15);">
+                    <span style="color: var(--green);">bilingual</span>
+                    <span style="color: var(--text-dim);"> — </span>
+                    <span style="color: var(--text-muted);">译文 + 分隔线 + 原文</span>
+                  </div>
+                  <div class="p-2 border rounded text-xs font-mono" style="background: var(--bg-inset); border-color: rgba(168,85,247,0.15);">
+                    <span style="color: var(--purple);">bilingual_compare</span>
+                    <span style="color: var(--text-dim);"> — </span>
+                    <span style="color: var(--text-muted);">逐段原/译交替</span>
+                  </div>
                 </div>
               )}
             </div>

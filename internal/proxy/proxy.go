@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,16 @@ import (
 	"github.com/zerx-lab/LspProxy/internal/lsp"
 	"github.com/zerx-lab/LspProxy/internal/translate"
 )
+
+// lspExitError 携带 LSP 子进程的原始退出码，用于在 cmd/run.go 中透传给编辑器进程。
+type lspExitError struct {
+	code int
+	err  error
+}
+
+func (e *lspExitError) Error() string { return e.err.Error() }
+func (e *lspExitError) Unwrap() error { return e.err }
+func (e *lspExitError) ExitCode() int { return e.code }
 
 // Proxy 是 LSP 透明代理，插入编辑器与真实 LSP 进程之间。
 type Proxy struct {
@@ -81,7 +92,7 @@ func (p *Proxy) Run(ctx context.Context, command string, args []string) error {
 	p.logger.Info("LSP 子进程已启动", slog.Int("pid", cmd.Process.Pid))
 
 	// 创建消息处理器（负责翻译）
-	handler := lsp.NewHandler(p.engine, p.cfg.Proxy.TargetLang, p.logger, p.cfg.Proxy.TranslationTimeout)
+	handler := lsp.NewHandler(p.engine, p.cfg.Proxy.TargetLang, p.logger, p.cfg.Proxy.TranslationTimeout, p.cfg.Proxy.DisplayMode)
 
 	// 使用 WaitGroup 等待两个转发 goroutine 都退出
 	var wg sync.WaitGroup
@@ -104,18 +115,84 @@ func (p *Proxy) Run(ctx context.Context, command string, args []string) error {
 	wg.Wait()
 
 	// 等待子进程退出并获取退出状态
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	if waitErr != nil && ctx.Err() != nil {
 		// 进程被 context 取消时退出不算异常
-		if ctx.Err() != nil {
-			p.logger.Info("LSP 子进程因 context 取消而退出")
-			return nil
+		p.logger.Info("LSP 子进程因 context 取消而退出")
+		return nil
+	}
+
+	if waitErr != nil {
+		// LSP 子进程异常退出：获取退出码，向编辑器透传崩溃信息，再退出
+		exitCode := 1
+		var exitErr *exec.ExitError
+		if ok := errors.As(waitErr, &exitErr); ok {
+			exitCode = exitErr.ExitCode()
 		}
-		p.logger.Warn("LSP 子进程异常退出", slog.String("error", err.Error()))
-		return fmt.Errorf("LSP 子进程退出: %w", err)
+		p.logger.Warn("LSP 子进程异常退出",
+			slog.String("error", waitErr.Error()),
+			slog.Int("exitCode", exitCode),
+		)
+		// 向编辑器发送崩溃通知，并对所有 in-flight 请求返回错误响应
+		p.notifyLspCrash(handler, waitErr, exitCode)
+		return &lspExitError{code: exitCode, err: fmt.Errorf("LSP 子进程退出: %w", waitErr)}
 	}
 
 	p.logger.Info("LSP 子进程正常退出")
 	return nil
+}
+
+// notifyLspCrash 在 LSP 子进程异常退出后，通过 os.Stdout 直接向编辑器发送：
+//  1. window/showMessage 通知：在编辑器 UI 上弹出错误提示
+//  2. 所有 in-flight 请求的 RequestFailed 错误响应：解除编辑器侧挂起的请求
+//
+// 此时两个转发 goroutine 均已退出，os.Stdout 的写出 goroutine 也已结束，
+// 直接写入 os.Stdout 是安全的（无并发竞争）。
+func (p *Proxy) notifyLspCrash(handler *lsp.Handler, waitErr error, exitCode int) {
+	crashMsg := fmt.Sprintf("LSP 进程已崩溃（exit %d）：%s", exitCode, waitErr.Error())
+
+	// ── 1. window/showMessage 通知 ──────────────────────────────────────
+	type showMessageParams struct {
+		// Type: 1=Error 2=Warning 3=Info 4=Log
+		Type    int    `json:"type"`
+		Message string `json:"message"`
+	}
+	notifParams, _ := json.Marshal(showMessageParams{Type: 1, Message: crashMsg})
+	notif := lsp.BaseMessage{
+		JSONRPC: "2.0",
+		Method:  "window/showMessage",
+		Params:  notifParams,
+	}
+	if data, err := json.Marshal(notif); err == nil {
+		if werr := lsp.WriteMessage(os.Stdout, data); werr != nil {
+			p.logger.Warn("发送 window/showMessage 失败", slog.String("error", werr.Error()))
+		}
+	}
+
+	// ── 2. 对所有 in-flight 请求发送 RequestFailed 错误响应 ──────────────
+	// LSP 错误码 -32803 = RequestFailed（LSP 3.17）
+	const codeRequestFailed = -32803
+	for _, id := range handler.DrainPending() {
+		resp := lsp.BaseMessage{
+			JSONRPC: "2.0",
+			ID:      id,
+			Error: &lsp.ResponseError{
+				Code:    codeRequestFailed,
+				Message: crashMsg,
+			},
+		}
+		data, err := json.Marshal(resp)
+		if err != nil {
+			continue
+		}
+		if werr := lsp.WriteMessage(os.Stdout, data); werr != nil {
+			p.logger.Warn("发送 RequestFailed 响应失败",
+				slog.String("id", string(id)),
+				slog.String("error", werr.Error()),
+			)
+			break // stdout 已不可写，后续也会失败，直接停止
+		}
+	}
 }
 
 // forwardClientToLsp 从 clientReader（os.Stdin）读取 JSON-RPC 帧，
@@ -269,6 +346,11 @@ func (p *Proxy) forwardLspToClient(
 					slog.String("error", err.Error()),
 				)
 				processed = rawFrame
+			}
+			// processed 为 nil 表示该帧已被代理内部消费（如 diagnostic/refresh 响应），
+			// 无需转发给编辑器，直接丢弃。
+			if processed == nil {
+				return
 			}
 			enqueue(processed)
 		}(raw)

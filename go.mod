@@ -1,6 +1,6 @@
 module github.com/zerx-lab/LspProxy
 
-go 1.24.2
+go 1.25.0
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
@@ -9,6 +9,8 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 )
+
+require golang.org/x/sync v0.20.0
 
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect

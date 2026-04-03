@@ -122,16 +122,40 @@ type Diagnostic struct {
 	Range json.RawMessage `json:"range"`
 	// Severity 诊断严重程度：1=Error, 2=Warning, 3=Information, 4=Hint
 	Severity int `json:"severity,omitempty"`
-	// Message 诊断的描述文本（需要翻译的核心字段）
-	Message string `json:"message"`
+	// Code 诊断代码，可以是字符串或整数（如 "inactive-code"、E0001）
+	Code json.RawMessage `json:"code,omitempty"`
+	// CodeDescription 指向诊断详情的链接（LSP 3.16+）
+	CodeDescription json.RawMessage `json:"codeDescription,omitempty"`
 	// Source 产生该诊断的工具或语言服务器名称（如 "rustc"、"clippy"）
 	Source string `json:"source,omitempty"`
+	// Message 诊断的描述文本（需要翻译的核心字段）
+	Message string `json:"message"`
+	// Tags 诊断标签：1=Unnecessary（灰显非活跃代码），2=Deprecated
+	Tags json.RawMessage `json:"tags,omitempty"`
+	// RelatedInformation 关联的补充信息（如变量声明位置等）
+	RelatedInformation json.RawMessage `json:"relatedInformation,omitempty"`
+	// Data 供代码动作使用的扩展数据（LSP 3.16+）
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // PublishDiagnosticsParams 对应 textDocument/publishDiagnostics 通知的参数。
 type PublishDiagnosticsParams struct {
 	// URI 对应的文档 URI
 	URI string `json:"uri"`
+	// Version 文档版本号（可选，LSP 3.15+）
+	Version *int `json:"version,omitempty"`
 	// Diagnostics 该文档的全量诊断列表
 	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// DocumentDiagnosticReport 对应 textDocument/diagnostic 请求（拉取模式）的响应结果。
+// LSP 3.17+ 规范：编辑器主动拉取诊断，而非服务端推送。
+// rust-analyzer、clangd 等现代 LSP 服务器会同时支持拉取和推送两种模式。
+type DocumentDiagnosticReport struct {
+	// Kind 报告类型："full"（全量）或 "unchanged"（未变化，无需重新渲染）
+	Kind string `json:"kind"`
+	// ResultID 结果标识符，供下次请求时作为 previousResultId 传入（增量更新优化）
+	ResultID string `json:"resultId,omitempty"`
+	// Items 诊断条目列表（kind 为 "full" 时存在）
+	Items []Diagnostic `json:"items,omitempty"`
 }

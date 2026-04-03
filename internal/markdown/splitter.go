@@ -76,18 +76,32 @@ func Split(text string) []Segment {
 					// 只在行首检测关闭围栏（符合 CommonMark 规范）
 					closeFence, closeFenceLen := detectFence(runes, i)
 					if closeFence == fence && closeFenceLen >= fenceLen {
-						code.WriteString(string(runes[i : i+closeFenceLen]))
-						i += closeFenceLen
-						// 吃掉关闭围栏后的空格/换行
-						for i < length && runes[i] != '\n' {
-							code.WriteRune(runes[i])
-							i++
+						// 验证关闭围栏后到换行之间只有空格/tab：
+						// 若存在非空白字符（如语言标识符 "rust"），则不是有效关闭围栏，
+						// 例如 ```rust 应被视为新代码块的开始行，而非关闭围栏。
+						hasNonSpace := false
+						for k := i + closeFenceLen; k < length && runes[k] != '\n'; k++ {
+							if runes[k] != ' ' && runes[k] != '\t' {
+								hasNonSpace = true
+								break
+							}
 						}
-						if i < length && runes[i] == '\n' {
-							code.WriteRune('\n')
-							i++
+						if !hasNonSpace {
+							// 有效关闭围栏：写入并终止代码块扫描
+							code.WriteString(string(runes[i : i+closeFenceLen]))
+							i += closeFenceLen
+							// 吃掉关闭围栏后的空格/换行
+							for i < length && runes[i] != '\n' {
+								code.WriteRune(runes[i])
+								i++
+							}
+							if i < length && runes[i] == '\n' {
+								code.WriteRune('\n')
+								i++
+							}
+							break
 						}
-						break
+						// 关闭围栏后含非空白字符（如 ```rust），视为普通行继续处理
 					}
 					// 普通行：整行写入代码块
 					for i < length && runes[i] != '\n' {

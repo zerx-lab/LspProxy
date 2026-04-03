@@ -9,21 +9,23 @@ import (
 	"github.com/zerx-lab/LspProxy/internal/glossary"
 )
 
-// New 根据配置创建对应的翻译引擎，并包装三级缓存（内存 LRU + 磁盘词典）和术语词汇本。
+// New 根据配置创建对应的翻译引擎，并包装三级缓存（内存 LRU + 磁盘词典）、
+// 并发合并和术语词汇本。
 //
 // lspName 为当前代理的 LSP 可执行文件名（如 "rust-analyzer"），用于加载 LSP 专属词汇本。
 // 传空字符串时仅使用全局词汇本。
 //
 // 引擎链路（从外到内）：
 //
-//	GlossaryEngine → DictEngine（内存LRU + 磁盘词典 + 在线翻译）
+//	GlossaryEngine → SingleflightEngine → DictEngine（内存LRU + 磁盘词典 + 在线翻译）
 //
 // 查询顺序：
-//  1. LSP 专属词汇本
-//  2. 全局词汇本
-//  3. 内存 LRU 缓存
-//  4. 磁盘 JSON 词典
-//  5. 在线翻译 API
+//  1. LSP 专属词汇本（纯内存，最高优先级）
+//  2. 全局词汇本（纯内存）
+//  3. [SingleflightEngine] 合并并发请求（相同文本只发起一次 API 调用）
+//  4. 内存 LRU 缓存
+//  5. 磁盘 JSON 词典
+//  6. 在线翻译 API
 func New(cfg *config.Config, lspName string, logger *slog.Logger) (Engine, error) {
 	var base Engine
 
@@ -75,6 +77,11 @@ func New(cfg *config.Config, lspName string, logger *slog.Logger) (Engine, error
 	} else {
 		base = NewDictEngine(base, memoryLimit, disk)
 	}
+
+	// ── 并发合并层：确保对相同文本的并发翻译请求只发起一次 API 调用 ──
+	// 位于 DictEngine/CachedEngine 之外、GlossaryEngine 之内，
+	// 对所有需要网络 IO 的路径均有效（词汇本命中是纯内存操作，无需此层）。
+	base = NewSingleflightEngine(base)
 
 	// ── 术语词汇本层（最高优先级）──
 	glossaryDir := cfg.Proxy.GlossaryDir

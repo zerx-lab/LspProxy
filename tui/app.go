@@ -44,9 +44,9 @@ const (
 )
 
 // numConfigInputs 配置表单的输入框数量
-const numConfigInputs = 11
+const numConfigInputs = 12
 
-// numConfigFocusable 配置表单可聚焦项总数（11 个输入框 + 1 个保存按钮）
+// numConfigFocusable 配置表单可聚焦项总数（12 个输入框 + 1 个保存按钮）
 const numConfigFocusable = numConfigInputs + 1
 
 // 配置表单字段索引常量（与 configLabels / configGroups 对应）
@@ -57,6 +57,7 @@ const (
 	fieldModel                     // OpenAI 模型名
 	fieldThinkingMode              // 思考模式 (auto|enabled|disabled)
 	fieldTargetLang                // 目标翻译语言
+	fieldDisplayMode               // 展示模式 (translation_only|bilingual|bilingual_compare)
 	fieldCacheSize                 // LRU 缓存大小
 	fieldDictMaxEntries            // 磁盘词典最大条目数
 	fieldTranslationTimeout        // 翻译等待超时（ms），0 表示无限等待
@@ -72,6 +73,7 @@ var configLabels = [numConfigInputs]string{
 	"OpenAI 模型",
 	"思考模式         [ auto | enabled | disabled ]",
 	"目标语言         [ zh-CN | ja | ko … ]",
+	"展示模式         [ translation_only | bilingual | bilingual_compare ]",
 	"内存缓存上限     [ MB，默认 30 ]",
 	"磁盘词典上限     [ 条目数，0 = 不限，默认 100000 ]",
 	"翻译等待超时     [ ms，0 = 无限等待，默认 600 ]",
@@ -87,6 +89,7 @@ var configPlaceholders = [numConfigInputs]string{
 	"gpt-4o-mini",
 	"auto",
 	"zh-CN",
+	"translation_only",
 	"30",
 	"100000",
 	"600",
@@ -237,6 +240,10 @@ type Model struct {
 // New 创建并初始化 TUI Model。
 func New(cfg *config.Config, cfgPath string) Model {
 	// 将配置值填入各输入框
+	displayModeVal := string(cfg.Proxy.DisplayMode)
+	if displayModeVal == "" {
+		displayModeVal = "translation_only"
+	}
 	initValues := [numConfigInputs]string{
 		cfg.Translate.Engine,
 		cfg.Translate.OpenAI.BaseURL,
@@ -244,6 +251,7 @@ func New(cfg *config.Config, cfgPath string) Model {
 		cfg.Translate.OpenAI.Model,
 		cfg.Translate.OpenAI.ThinkingMode,
 		cfg.Proxy.TargetLang,
+		displayModeVal,
 		strconv.Itoa(cfg.Proxy.CacheSize),
 		strconv.Itoa(cfg.Proxy.DictMaxEntries),
 		strconv.Itoa(cfg.Proxy.TranslationTimeout),
@@ -419,7 +427,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("✗ 词典清理失败：%v", msg.err)
 			m.statusErr = true
 		} else {
-			m.statusMsg = fmt.Sprintf("✓ %s — 已清除 %d 条", msg.label, msg.cleared)
+			if msg.cleared < 0 {
+				m.statusMsg = fmt.Sprintf("✓ %s — 词典已清空", msg.label)
+			} else {
+				m.statusMsg = fmt.Sprintf("✓ %s — 已清除 %d 条", msg.label, msg.cleared)
+			}
 			m.statusErr = false
 		}
 		m.dictConfirm = false
@@ -704,7 +716,10 @@ func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) switchToConfig() (tea.Model, tea.Cmd) {
 	m.blurAll()
 	m.activeTab = TabConfig
-	m.inputs[m.focusIdx].Focus()
+	// focusIdx 可能等于 numConfigInputs（保存按钮），此时不调用 inputs 索引
+	if m.focusIdx < numConfigInputs {
+		m.inputs[m.focusIdx].Focus()
+	}
 	return m, textinput.Blink
 }
 
@@ -784,6 +799,15 @@ func (m Model) doSaveConfig() (tea.Model, tea.Cmd) {
 	m.cfg.Translate.OpenAI.Model = strings.TrimSpace(m.inputs[fieldModel].Value())
 	m.cfg.Translate.OpenAI.ThinkingMode = strings.TrimSpace(m.inputs[fieldThinkingMode].Value())
 	m.cfg.Proxy.TargetLang = strings.TrimSpace(m.inputs[fieldTargetLang].Value())
+
+	// 校验展示模式：仅允许三种合法值，其余重置为 translation_only
+	rawDisplayMode := strings.TrimSpace(m.inputs[fieldDisplayMode].Value())
+	switch config.DisplayMode(rawDisplayMode) {
+	case config.DisplayBilingual, config.DisplayBilingualCompare:
+		m.cfg.Proxy.DisplayMode = config.DisplayMode(rawDisplayMode)
+	default:
+		m.cfg.Proxy.DisplayMode = config.DisplayTranslationOnly
+	}
 
 	if n, err := strconv.Atoi(strings.TrimSpace(m.inputs[fieldCacheSize].Value())); err == nil && n > 0 {
 		m.cfg.Proxy.CacheSize = n
@@ -1026,6 +1050,18 @@ func (m Model) renderStatus() string {
 	sb.WriteString("\n")
 	sb.WriteString(kv("目标语言", m.cfg.Proxy.TargetLang))
 	sb.WriteString("\n")
+
+	displayModeDisplay := string(m.cfg.Proxy.DisplayMode)
+	switch m.cfg.Proxy.DisplayMode {
+	case config.DisplayBilingual:
+		displayModeDisplay = "bilingual（双语）"
+	case config.DisplayBilingualCompare:
+		displayModeDisplay = "bilingual_compare（双语对照）"
+	default:
+		displayModeDisplay = "translation_only（仅译文）"
+	}
+	sb.WriteString(kv("展示模式", displayModeDisplay))
+	sb.WriteString("\n")
 	sb.WriteString(kv("内存缓存上限", strconv.Itoa(m.cfg.Proxy.CacheSize)+" MB"))
 	sb.WriteString("\n")
 
@@ -1096,13 +1132,13 @@ func (m Model) renderConfig() string {
 	sb.WriteString(styles.TitleStyle.Render("编辑配置"))
 	sb.WriteString("\n\n")
 
-	// 字段分组：翻译(0-3)、代理(4-5)、日志(6-7)
+	// 字段分组：翻译引擎、代理设置、日志设置
 	groups := []struct {
 		title  string
 		fields []int
 	}{
 		{"翻译引擎", []int{fieldEngine, fieldBaseURL, fieldAPIKey, fieldModel, fieldThinkingMode}},
-		{"代理设置", []int{fieldTargetLang, fieldCacheSize, fieldDictMaxEntries, fieldTranslationTimeout}},
+		{"代理设置", []int{fieldTargetLang, fieldDisplayMode, fieldCacheSize, fieldDictMaxEntries, fieldTranslationTimeout}},
 		{"日志设置", []int{fieldLogLevel, fieldLogFile}},
 	}
 
@@ -1982,26 +2018,25 @@ func loadDictInfoCmd(dictPath string) tea.Cmd {
 // 由于 TUI 模式没有运行中的 DiskDict 实例，直接操作 JSON 文件。
 func clearDictCmd(dictPath string, days int, label string) tea.Cmd {
 	return func() tea.Msg {
-		// 读取当前词典文件
+		// 全部清空：直接写入空对象，跳过大文件反序列化避免 UI 卡死
+		if days <= 0 {
+			if _, err := os.Stat(dictPath); os.IsNotExist(err) {
+				return dictClearResultMsg{cleared: 0, label: label}
+			}
+			if err := os.WriteFile(dictPath, []byte("{}"), 0o644); err != nil {
+				return dictClearResultMsg{err: err, label: label}
+			}
+			// cleared = -1 表示"全部清空，条目数未统计"
+			return dictClearResultMsg{cleared: -1, label: label}
+		}
+
+		// 按时间清理：需要读取文件内容进行过滤
 		data, err := os.ReadFile(dictPath)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return dictClearResultMsg{cleared: 0, label: label}
 			}
 			return dictClearResultMsg{err: err, label: label}
-		}
-
-		// 全部清空：直接写入空对象
-		if days <= 0 {
-			var raw map[string]json.RawMessage
-			if err := json.Unmarshal(data, &raw); err != nil {
-				return dictClearResultMsg{err: err, label: label}
-			}
-			count := len(raw)
-			if err := os.WriteFile(dictPath, []byte("{}"), 0o644); err != nil {
-				return dictClearResultMsg{err: err, label: label}
-			}
-			return dictClearResultMsg{cleared: count, label: label}
 		}
 
 		// 按时间清理

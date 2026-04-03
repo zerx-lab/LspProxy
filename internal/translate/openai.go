@@ -204,6 +204,8 @@ func systemPrompt(targetLang string) string {
 }
 
 // Translate 调用 OpenAI 兼容 API 将 text 翻译为 targetLang 所指定的语言。
+// 针对 Keep-Alive 连接被服务端回收导致的 EOF / connection reset 错误，
+// 最多自动重试一次（翻译请求是幂等的，重试安全）。
 func (o *OpenAIEngine) Translate(ctx context.Context, text, targetLang string) (string, error) {
 	// 获取系统提示词：优先使用 loader 渲染，loader 为 nil 时回退到内置函数
 	var sysPrompt string
@@ -234,51 +236,73 @@ func (o *OpenAIEngine) Translate(ctx context.Context, text, targetLang string) (
 		return "", fmt.Errorf("openai translate: 序列化请求体失败: %w", err)
 	}
 
-	// 构造 HTTP 请求
-	endpoint := o.BaseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("openai translate: 构建请求失败: %w", err)
+	// doOnce 执行一次 HTTP 请求并解析响应。
+	// bodyBytes 已序列化完毕，每次重试直接复用，无副作用。
+	doOnce := func() (string, error) {
+		endpoint := o.BaseURL + "/chat/completions"
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return "", fmt.Errorf("openai translate: 构建请求失败: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		// 仅在 APIKey 非空时设置 Authorization 头
+		if o.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+o.APIKey)
+		}
+
+		resp, err := o.client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("openai translate: 请求失败: %w", err)
+		}
+		defer resp.Body.Close()
+
+		// 解析响应
+		var apiResp openAIResponse
+		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+			return "", fmt.Errorf("openai translate: 解析响应失败 (HTTP %d): %w", resp.StatusCode, err)
+		}
+
+		// 优先检查 API 级别的错误字段（部分服务在 200 中也会返回 error 对象）
+		if apiResp.Error != nil {
+			return "", fmt.Errorf("openai translate: API 错误 [%s]: %s", apiResp.Error.Type, apiResp.Error.Message)
+		}
+
+		// 检查 HTTP 状态码
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("openai translate: HTTP 状态码 %d", resp.StatusCode)
+		}
+
+		// 提取翻译结果
+		if len(apiResp.Choices) == 0 {
+			return "", fmt.Errorf("openai translate: 响应中没有 choices")
+		}
+
+		result := strings.TrimSpace(apiResp.Choices[0].Message.Content)
+		if result == "" {
+			return "", fmt.Errorf("openai translate: 模型返回了空内容")
+		}
+
+		return result, nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	// 仅在 APIKey 非空时设置 Authorization 头
-	if o.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.APIKey)
+	result, err := doOnce()
+	if err != nil && isRetryableNetErr(err) && ctx.Err() == nil {
+		// Keep-Alive 连接被服务端回收（EOF / connection reset）：
+		// 标准库对 POST 不自动重试，此处补充一次幂等重试。
+		result, err = doOnce()
 	}
+	return result, err
+}
 
-	// 发送请求
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("openai translate: 请求失败: %w", err)
+// isRetryableNetErr 判断错误是否属于可安全重试的网络层瞬时故障。
+// 仅匹配 EOF 和连接重置，不重试超时或业务错误，避免放大 API 调用量。
+func isRetryableNetErr(err error) bool {
+	if err == nil {
+		return false
 	}
-	defer resp.Body.Close()
-
-	// 解析响应
-	var apiResp openAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return "", fmt.Errorf("openai translate: 解析响应失败 (HTTP %d): %w", resp.StatusCode, err)
-	}
-
-	// 优先检查 API 级别的错误字段（部分服务在 200 中也会返回 error 对象）
-	if apiResp.Error != nil {
-		return "", fmt.Errorf("openai translate: API 错误 [%s]: %s", apiResp.Error.Type, apiResp.Error.Message)
-	}
-
-	// 检查 HTTP 状态码
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openai translate: HTTP 状态码 %d", resp.StatusCode)
-	}
-
-	// 提取翻译结果
-	if len(apiResp.Choices) == 0 {
-		return "", fmt.Errorf("openai translate: 响应中没有 choices")
-	}
-
-	result := strings.TrimSpace(apiResp.Choices[0].Message.Content)
-	if result == "" {
-		return "", fmt.Errorf("openai translate: 模型返回了空内容")
-	}
-
-	return result, nil
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "broken pipe")
 }

@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,6 +20,12 @@ import (
 	"github.com/zerx-lab/LspProxy/internal/translate"
 	"github.com/zerx-lab/LspProxy/tui"
 )
+
+// exitCoder 是可以提供退出码的错误接口，由 proxy.lspExitError 实现。
+type exitCoder interface {
+	error
+	ExitCode() int
+}
 
 // tuiFlag 若为 true，则启动 TUI 管理界面而非直接运行代理
 var tuiFlag bool
@@ -123,7 +130,15 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	// ── 10. 运行代理（阻塞直到 LSP 进程退出或收到终止信号）───────────────
-	return p.Run(ctx, lspCommand, lspArgs)
+	if err := p.Run(ctx, lspCommand, lspArgs); err != nil {
+		// LSP 子进程异常退出：以相同退出码退出，让编辑器进程管理器感知崩溃
+		var ec exitCoder
+		if errors.As(err, &ec) {
+			os.Exit(ec.ExitCode())
+		}
+		return err
+	}
+	return nil
 }
 
 // buildFileLogger 根据配置创建写入文件的 slog.Logger。

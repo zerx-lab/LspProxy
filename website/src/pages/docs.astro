@@ -33,6 +33,7 @@ const sidebarItems = [
     section: '高级',
     items: [
       { href: '#tui', label: 'TUI 管理界面' },
+      { href: '#bilingual', label: '双语对照' },
       { href: '#glossary', label: '词汇本' },
       { href: '#architecture', label: '架构原理' },
       { href: '#contributing', label: '贡献指南' },
@@ -75,6 +76,7 @@ const codeConfig = `<code><span class="syntax-comment"># 翻译引擎配置</spa
 
 <span class="syntax-comment"># 代理行为配置</span>
 <span class="syntax-var">proxy</span>:
+  <span class="syntax-var">display_mode</span>: <span class="syntax-string">&quot;translation_only&quot;</span>  <span class="syntax-comment"># translation_only | bilingual | bilingual_compare</span>
   <span class="syntax-var">cache_size</span>: <span class="syntax-num">30</span>              <span class="syntax-comment"># 内存上限（MB），默认 30</span>
   <span class="syntax-var">dict_file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/dict.json&quot;</span>
   <span class="syntax-var">dict_max_entries</span>: <span class="syntax-num">100000</span>   <span class="syntax-comment"># 磁盘词典最大条目数</span>
@@ -287,8 +289,8 @@ go vet ./...</code>`;
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             { label: '透明代理', desc: '不修改 LSP 协议，仅处理文档字段' },
-            { label: '三级缓存', desc: '内存 → 磁盘 → API，已译内容零延迟' },
-            { label: '多引擎', desc: 'Google / OpenAI / DeepSeek / Ollama' },
+            { label: '四级缓存', desc: '词汇本 → 内存 → 磁盘 → API，已译内容零延迟' },
+            { label: '双语对照', desc: '三种显示模式，译文 / 双语 / 逐段对照自由切换' },
           ].map(item => (
             <div class="p-3 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
               <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">{item.label}</p>
@@ -602,9 +604,191 @@ go vet ./...</code>`;
         </div>
       </section>
 
-      <!-- Glossary -->
-      <section id="glossary" class="mb-16 scroll-mt-20">
+      <!-- Bilingual -->
+      <section id="bilingual" class="mb-16 scroll-mt-20">
         <div class="flex items-center gap-2 mb-6">
+          <span class="tag">高级</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">双语对照</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
+          通过 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">proxy.display_mode</code> 控制翻译结果的呈现方式，共三种模式，修改配置后即时生效，无需重启。
+        </p>
+
+        <!-- 原始文档 -->
+        <div class="mb-6 border rounded overflow-hidden" style="border-color: var(--border-subtle);">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">LSP 原始英文文档（rust-analyzer hover）</span>
+          </div>
+          <pre class="p-4 text-xs font-mono leading-relaxed" style="color: var(--text-dim);">Moves a value out of memory without copying it.
+
+This is commonly used when you have a value behind a pointer
+and want to move ownership to the caller.
+
+# Safety
+
+The caller must ensure the original location is not used after
+this call.</pre>
+        </div>
+
+        <p class="text-xs font-mono mb-4" style="color: var(--text-dim);">以上文档经过 LspProxy 处理后，根据 <code style="color: var(--text-heading);">display_mode</code> 的不同，编辑器中 hover 会看到：</p>
+
+        <div class="space-y-4 mb-8">
+
+          <!-- translation_only -->
+          <div class="border rounded overflow-hidden" style="border-color: var(--border);">
+            <div class="flex items-center justify-between px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+              <div class="flex items-center gap-3">
+                <code class="text-xs font-mono px-2 py-0.5 rounded" style="background: var(--bg-inset); color: var(--text-heading);">translation_only</code>
+                <span class="text-xs font-mono" style="color: var(--text-dim);">默认值</span>
+              </div>
+              <span class="text-xs font-mono" style="color: var(--text-dim);">纯译文，简洁高效</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2">
+              <div class="p-4 border-r" style="border-color: var(--border-subtle);">
+                <p class="text-xs font-mono mb-3 section-label">说明</p>
+                <p class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">
+                  完全替换英文原文，只保留中文译文。文档简洁干净，阅读速度最快。适合日常开发、已熟悉相关 API 的场景。
+                </p>
+              </div>
+              <div class="p-4">
+                <p class="text-xs font-mono mb-3 section-label">hover 效果</p>
+                <pre class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">将一个值从内存中移动出去，
+不进行复制。
+
+当你有一个指针指向某个值，
+并希望将所有权转移给调用者
+时，通常会用到它。
+
+# 安全性
+
+调用者必须确保原始位置在
+此调用后不再被使用。</pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- bilingual -->
+          <div class="border rounded overflow-hidden" style="border-color: rgba(34,197,94,0.3);">
+            <div class="flex items-center justify-between px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: rgba(34,197,94,0.2);">
+              <div class="flex items-center gap-3">
+                <code class="text-xs font-mono px-2 py-0.5 rounded" style="background: var(--bg-inset); color: var(--green);">bilingual</code>
+              </div>
+              <span class="text-xs font-mono" style="color: var(--text-dim);">译文在前，原文附后</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2">
+              <div class="p-4 border-r" style="border-color: var(--border-subtle);">
+                <p class="text-xs font-mono mb-3 section-label">说明</p>
+                <p class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">
+                  完整译文展示后，以 <code style="color: var(--text-heading);">---</code> 分隔线附上完整英文原文。正常阅读中文，遇到歧义可快速滑到末尾核对原文，兼顾效率与准确。
+                </p>
+              </div>
+              <div class="p-4">
+                <p class="text-xs font-mono mb-3 section-label">hover 效果</p>
+                <pre class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">将一个值从内存中移动出去，
+不进行复制。
+
+当你有一个指针指向某个值，
+并希望将所有权转移给调用者
+时，通常会用到它。
+
+# 安全性
+
+调用者必须确保原始位置在
+此调用后不再被使用。
+
+---
+
+<span style="color: var(--text-dim);">Moves a value out of memory
+without copying it.
+
+This is commonly used when you
+have a value behind a pointer...
+
+# Safety
+
+The caller must ensure the
+original location is not used...</span></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- bilingual_compare -->
+          <div class="border rounded overflow-hidden" style="border-color: rgba(168,85,247,0.3);">
+            <div class="flex items-center justify-between px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: rgba(168,85,247,0.2);">
+              <div class="flex items-center gap-3">
+                <code class="text-xs font-mono px-2 py-0.5 rounded" style="background: var(--bg-inset); color: var(--purple);">bilingual_compare</code>
+              </div>
+              <span class="text-xs font-mono" style="color: var(--text-dim);">逐段原文 / 译文交替</span>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2">
+              <div class="p-4 border-r" style="border-color: var(--border-subtle);">
+                <p class="text-xs font-mono mb-3 section-label">说明</p>
+                <p class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">
+                  按 <code style="color: var(--text-heading);">\n\n</code> 将文档拆成段落，每段英文原文下方紧跟对应中文译文，逐段交替排列。适合精读长文档、学习 API 语义的场景。纯代码段落只显示一次，不重复。
+                </p>
+              </div>
+              <div class="p-4">
+                <p class="text-xs font-mono mb-3 section-label">hover 效果</p>
+                <pre class="text-xs font-mono leading-relaxed"><span style="color: var(--text-dim);">Moves a value out of memory
+without copying it.</span>
+<span style="color: var(--text-muted);">将一个值从内存中移动出去，
+不进行复制。</span>
+
+<span style="color: var(--text-dim);">This is commonly used when you
+have a value behind a pointer
+and want to move ownership...</span>
+<span style="color: var(--text-muted);">当你有一个指针指向某个值，
+并希望将所有权转移给调用者
+时，通常会用到它。</span>
+
+<span style="color: var(--text-dim);"># Safety</span>
+<span style="color: var(--text-muted);"># 安全性</span>
+
+<span style="color: var(--text-dim);">The caller must ensure the
+original location is not used
+after this call.</span>
+<span style="color: var(--text-muted);">调用者必须确保原始位置在
+此调用后不再被使用。</span></pre>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- 诊断消息说明 -->
+        <div class="border rounded overflow-hidden mb-4" style="border-color: var(--border-subtle);">
+          <div class="flex items-center gap-2 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+            <span class="text-xs font-mono font-semibold" style="color: var(--text-heading);">诊断消息（diagnostics）的双语格式</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2">
+            <div class="p-4 border-r" style="border-color: var(--border-subtle);">
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-muted);">
+                诊断消息是单行文本，不适合 Markdown 分隔线。启用 <code style="color: var(--green);">bilingual</code> 或 <code style="color: var(--purple);">bilingual_compare</code> 时，使用紧凑的 <code style="color: var(--text-heading);">  //  </code> 格式在同一行并排显示译文与原文。
+              </p>
+            </div>
+            <div class="p-4">
+              <p class="text-xs font-mono mb-2 section-label">诊断提示效果</p>
+              <div class="space-y-2">
+                <div class="p-2 rounded text-xs font-mono" style="background: var(--bg-inset);">
+                  <span style="color: var(--text-dim);">translation_only：</span><br/>
+                  <span style="color: var(--text-muted);">变量 'foo' 未被使用</span>
+                </div>
+                <div class="p-2 rounded text-xs font-mono" style="background: var(--bg-inset);">
+                  <span style="color: var(--text-dim);">bilingual / bilingual_compare：</span><br/>
+                  <span style="color: var(--text-muted);">变量 'foo' 未被使用</span>
+                  <span style="color: var(--text-dim);">  //  </span>
+                  <span style="color: var(--text-dim);">variable 'foo' is unused</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Glossary -->
+      <section id="glossary" class="mb-16 scroll-mt-20">        <div class="flex items-center gap-2 mb-6">
           <span class="tag">高级</span>
         </div>
         <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">词汇本（Glossary）</h2>
