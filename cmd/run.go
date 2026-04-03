@@ -100,7 +100,7 @@ func runProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── 7. 创建翻译引擎 ───────────────────────────────────────────────────
-	engine, err := translate.New(cfg)
+	engine, err := translate.New(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("初始化翻译引擎失败: %w", err)
 	}

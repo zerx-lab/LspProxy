@@ -3,6 +3,7 @@ package translate
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/zerx-lab/LspProxy/internal/config"
 )
@@ -17,7 +18,7 @@ import (
 //  1. 内存 LRU：按字节大小限制（cfg.Proxy.CacheSize MB，默认 30MB）
 //  2. 磁盘词典：持久化到 cfg.Proxy.DictFile（JSON 格式），进程退出不丢失
 //  3. 在线翻译：前两级均未命中时调用底层引擎
-func New(cfg *config.Config) (Engine, error) {
+func New(cfg *config.Config, logger *slog.Logger) (Engine, error) {
 	var base Engine
 
 	switch cfg.Translate.Engine {
@@ -33,7 +34,13 @@ func New(cfg *config.Config) (Engine, error) {
 		if oaiCfg.Model == "" {
 			return nil, fmt.Errorf("translate: openai 引擎需要配置 model")
 		}
-		base = NewOpenAIEngine(oaiCfg.BaseURL, oaiCfg.APIKey, oaiCfg.Model)
+		// 解析提示词文件路径
+		promptFile := oaiCfg.PromptFile
+		if promptFile == "" {
+			promptFile = config.DefaultPromptFile()
+		}
+		loader := NewPromptLoader(promptFile, logger)
+		base = NewOpenAIEngine(oaiCfg.BaseURL, oaiCfg.APIKey, oaiCfg.Model, oaiCfg.ThinkingMode, loader)
 
 	default:
 		return nil, fmt.Errorf("translate: 不支持的翻译引擎 %q（可选值：google、openai）", cfg.Translate.Engine)

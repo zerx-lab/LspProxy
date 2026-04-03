@@ -221,3 +221,11 @@ func (c *CachedEngine) evict() {
 		c.currentSize = 0
 	}
 }
+
+// Close 关闭底层引擎（若实现了 io.Closer）。
+func (c *CachedEngine) Close() error {
+	if closer, ok := c.engine.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}

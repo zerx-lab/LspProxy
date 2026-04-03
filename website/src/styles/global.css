@@ -239,11 +239,18 @@
     font-family: "JetBrains Mono", monospace;
     font-size: 13px;
     line-height: 1.7;
-    overflow: hidden;
+    /* overflow-x: auto 让代码块内部横向滚动，不撑宽父容器 */
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* 防止在 flex/grid 子元素中被撑宽 */
+    min-width: 0;
 }
 .code-block pre {
     padding: 20px 24px;
-    overflow-x: auto;
+    /* white-space: pre 保留格式；不换行，让父容器滚动 */
+    white-space: pre;
+    overflow-x: visible;
+    min-width: max-content;
 }
 
 /* 语法高亮 */

@@ -32,6 +32,15 @@ type OpenAIConfig struct {
 	APIKey string `mapstructure:"api_key"`
 	// Model 使用的模型名称，例如 gpt-4o-mini
 	Model string `mapstructure:"model"`
+	// ThinkingMode 控制模型的思考/推理模式。
+	// "auto"     - 自动判断：对已知思考模型（Qwen3、Doubao-thinking 等）自动关闭思考
+	// "enabled"  - 强制开启思考（适用于需要更精确推理的场景）
+	// "disabled" - 强制关闭思考（更快，适合翻译等简单任务）
+	ThinkingMode string `mapstructure:"thinking_mode"`
+	// PromptFile 系统提示词模板文件路径，默认 ~/.config/lsp-proxy/prompt.txt
+	// 文件内容为 text/template 格式，可使用 {{.TargetLang}} 变量。
+	// 文件不存在时自动创建默认提示词文件。
+	PromptFile string `mapstructure:"prompt_file"`
 }
 
 // ProxyConfig 代理行为相关配置
@@ -80,6 +89,15 @@ func defaultLogFile() string {
 	return filepath.Join(homeDir, ".local", "share", "lsp-proxy", "proxy.log")
 }
 
+// DefaultPromptFile 返回默认提示词文件路径 (~/.config/lsp-proxy/prompt.txt)
+func DefaultPromptFile() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".config", "lsp-proxy", "prompt.txt")
+	}
+	return filepath.Join(homeDir, ".config", "lsp-proxy", "prompt.txt")
+}
+
 // DefaultDictFile 返回默认磁盘词典文件路径 (~/.local/share/lsp-proxy/dict.json)
 func DefaultDictFile() string {
 	homeDir, err := os.UserHomeDir()
@@ -96,6 +114,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("translate.openai.base_url", "https://api.openai.com/v1")
 	v.SetDefault("translate.openai.api_key", "")
 	v.SetDefault("translate.openai.model", "gpt-4o-mini")
+	v.SetDefault("translate.openai.thinking_mode", "auto")
+	v.SetDefault("translate.openai.prompt_file", DefaultPromptFile())
 
 	// 代理默认配置
 	v.SetDefault("proxy.target_lang", "zh-CN")
@@ -191,6 +211,8 @@ func (c *Config) Save(path string) error {
 	v.Set("translate.openai.base_url", c.Translate.OpenAI.BaseURL)
 	v.Set("translate.openai.api_key", c.Translate.OpenAI.APIKey)
 	v.Set("translate.openai.model", c.Translate.OpenAI.Model)
+	v.Set("translate.openai.thinking_mode", c.Translate.OpenAI.ThinkingMode)
+	v.Set("translate.openai.prompt_file", c.Translate.OpenAI.PromptFile)
 	v.Set("proxy.target_lang", c.Proxy.TargetLang)
 	v.Set("proxy.cache_size", c.Proxy.CacheSize)
 	v.Set("proxy.dict_file", c.Proxy.DictFile)

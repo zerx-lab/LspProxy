@@ -17,7 +17,7 @@ const navLinks = [
         <span class="font-mono font-semibold text-sm tracking-tight" style="color: var(--text-heading);">LSP-PROXY.</span>
       </a>
 
-      <!-- Nav links -->
+      <!-- Nav links (desktop) -->
       <div class="hidden md:flex items-center gap-6">
         {navLinks.map(link => (
           <a
@@ -42,11 +42,51 @@ const navLinks = [
           GITHUB
         </a>
         <ThemeToggle />
-        <a href="/docs" class="btn-primary text-xs py-1.5 px-3">
+        <a href="/docs" class="btn-primary text-xs py-1.5 px-3 hidden md:inline-flex">
           快速开始
         </a>
+        <!-- 汉堡按钮（移动端） -->
+        <button
+          id="mobile-menu-toggle"
+          class="md:hidden flex flex-col items-center justify-center w-8 h-8 gap-1.5 rounded"
+          aria-label="菜单"
+          aria-expanded="false"
+        >
+          <span class="hamburger-bar block w-5 h-px transition-all duration-200" style="background: var(--text-muted);"></span>
+          <span class="hamburger-bar block w-5 h-px transition-all duration-200" style="background: var(--text-muted);"></span>
+          <span class="hamburger-bar block w-5 h-px transition-all duration-200" style="background: var(--text-muted);"></span>
+        </button>
       </div>
     </div>
+  </div>
+
+  <!-- 移动端下拉菜单 -->
+  <div
+    id="mobile-menu"
+    class="md:hidden hidden border-t px-4 py-4 space-y-3"
+    style="border-color: var(--border); background: color-mix(in srgb, var(--bg) 96%, transparent);"
+  >
+    {navLinks.map(link => (
+      <a
+        href={link.href}
+        class="block font-mono text-xs tracking-widest py-2 transition-colors duration-150"
+        style="color: var(--text-muted);"
+      >
+        {link.label}
+      </a>
+    ))}
+    <a
+      href="https://github.com/zerx-lab/LspProxy"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="block font-mono text-xs tracking-widest py-2 transition-colors duration-150"
+      style="color: var(--text-muted);"
+    >
+      GITHUB
+    </a>
+    <a href="/docs" class="btn-primary text-xs py-2 px-3 inline-block mt-1">
+      快速开始
+    </a>
   </div>
 </nav>
 
@@ -54,4 +94,37 @@ const navLinks = [
   nav a:not(.btn-primary):hover {
     color: var(--text-heading) !important;
   }
+
+  /* 汉堡按钮 open 态 */
+  #mobile-menu-toggle[aria-expanded="true"] .hamburger-bar:nth-child(1) {
+    transform: translateY(7px) rotate(45deg);
+  }
+  #mobile-menu-toggle[aria-expanded="true"] .hamburger-bar:nth-child(2) {
+    opacity: 0;
+  }
+  #mobile-menu-toggle[aria-expanded="true"] .hamburger-bar:nth-child(3) {
+    transform: translateY(-7px) rotate(-45deg);
+  }
 </style>
+
+<script is:inline>
+  (function () {
+    var btn = document.getElementById('mobile-menu-toggle');
+    var menu = document.getElementById('mobile-menu');
+    if (!btn || !menu) return;
+
+    btn.addEventListener('click', function () {
+      var isOpen = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', isOpen ? 'false' : 'true');
+      menu.classList.toggle('hidden', isOpen);
+    });
+
+    // 点击菜单内链接后关闭菜单
+    menu.querySelectorAll('a').forEach(function (link) {
+      link.addEventListener('click', function () {
+        btn.setAttribute('aria-expanded', 'false');
+        menu.classList.add('hidden');
+      });
+    });
+  })();
+</script>

@@ -318,8 +318,16 @@ func (d *DictEngine) Translate(ctx context.Context, text, targetLang string) (st
 }
 
 // Close 关闭磁盘词典，停止后台写盘并做最终持久化。
+// 同时关闭底层翻译引擎（若实现了 io.Closer）。
 func (d *DictEngine) Close() error {
-	return d.disk.Close()
+	diskErr := d.disk.Close()
+	// 传播 Close 到底层引擎（如 OpenAIEngine 的 PromptLoader 监听器）
+	if closer, ok := d.mem.engine.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil && diskErr == nil {
+			diskErr = err
+		}
+	}
+	return diskErr
 }
 
 // Name 返回引擎名称
