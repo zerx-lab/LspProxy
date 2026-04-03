@@ -16,8 +16,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"LspProxy/internal/config"
-	"LspProxy/tui/styles"
+	"github.com/zerx-lab/LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/tui/styles"
 )
 
 // ────────────────────────────────────────────────────────────

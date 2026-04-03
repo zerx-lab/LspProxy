@@ -37,8 +37,8 @@ import (
 	"sync"
 	"time"
 
-	"LspProxy/internal/markdown"
-	"LspProxy/internal/translate"
+	"github.com/zerx-lab/LspProxy/internal/markdown"
+	"github.com/zerx-lab/LspProxy/internal/translate"
 )
 
 // 确保 translateText 使用占位符法后，不再需要逐段处理，strings 仍被其他地方使用

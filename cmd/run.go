@@ -14,10 +14,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"LspProxy/internal/config"
-	"LspProxy/internal/proxy"
-	"LspProxy/internal/translate"
-	"LspProxy/tui"
+	"github.com/zerx-lab/LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/internal/proxy"
+	"github.com/zerx-lab/LspProxy/internal/translate"
+	"github.com/zerx-lab/LspProxy/tui"
 )
 
 // tuiFlag 若为 true，则启动 TUI 管理界面而非直接运行代理

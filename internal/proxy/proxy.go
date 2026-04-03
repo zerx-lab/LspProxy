@@ -14,9 +14,9 @@ import (
 	"os/exec"
 	"sync"
 
-	"LspProxy/internal/config"
-	"LspProxy/internal/lsp"
-	"LspProxy/internal/translate"
+	"github.com/zerx-lab/LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/internal/lsp"
+	"github.com/zerx-lab/LspProxy/internal/translate"
 )
 
 // Proxy 是 LSP 透明代理，插入编辑器与真实 LSP 进程之间。

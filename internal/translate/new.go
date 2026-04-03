@@ -4,7 +4,7 @@ package translate
 import (
 	"fmt"
 
-	"LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/internal/config"
 )
 
 // New 根据配置创建对应的翻译引擎，并包装三级缓存（内存 LRU + 磁盘词典）。

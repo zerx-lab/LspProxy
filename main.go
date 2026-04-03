@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"LspProxy/cmd"
+	"github.com/zerx-lab/LspProxy/cmd"
 )
 
 func main() {
