@@ -24,9 +24,12 @@ const defaultPromptTemplate = "You are a professional technical documentation tr
 	"Translate the user's input into {{.TargetLang}}. " +
 	"Rules you MUST follow:\n" +
 	"1. Preserve all Markdown formatting (headings, bold, italic, code blocks, inline code, lists, links, etc.) exactly as-is.\n" +
-	"2. Placeholders in the format $CODE_N$ (where N is a number, e.g. $CODE_0$, $CODE_1$) represent code snippets. " +
+	"2. Placeholders in the format $CODE_N$ (where N is a number, e.g. $CODE_0$, $CODE_1$) represent code snippets or protected terms. " +
 	"Keep them EXACTLY as-is — do NOT translate, modify, move, or remove them.\n" +
-	"3. Output ONLY the translated text. No explanations, no preamble, no commentary."
+	"3. Do NOT translate programming-domain technical terms. Keep them in their original English form. " +
+	"Examples of terms to keep as-is: panic, throw/throws, raise/raises, " +
+	"and any other term that is a keyword, directive, or established convention in programming documentation.\n" +
+	"4. Output ONLY the translated text. No explanations, no preamble, no commentary."
 
 // ─────────────────────────────────────────────
 // PromptData 模板数据

@@ -4,6 +4,7 @@ package tui
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ const (
 	TabConfig                // 配置视图：表单编辑配置
 	TabLog                   // 日志视图：滚动查看日志文件
 	TabPrompt                // 提示词编辑视图
+	TabDict                  // 词典管理视图
 )
 
 // numConfigInputs 配置表单的输入框数量
@@ -106,6 +108,34 @@ type promptLoadedMsg string
 // promptSavedMsg 提示词保存完成消息
 type promptSavedMsg struct{ err error }
 
+// dictInfoMsg 携带词典文件的统计信息
+type dictInfoMsg struct {
+	totalEntries int
+	filePath     string
+	fileSize     int64
+}
+
+// dictClearResultMsg 词典清理操作完成消息
+type dictClearResultMsg struct {
+	cleared int
+	err     error
+	label   string // 操作描述（如 "全部清空" / "超过 7 天"）
+}
+
+// dictCleanOption 定义一个词典清理选项
+type dictCleanOption struct {
+	label string // 显示文本
+	days  int    // 清理天数，0 表示全部清空
+}
+
+// dictCleanOptions 预定义的清理选项列表
+var dictCleanOptions = []dictCleanOption{
+	{"清除超过 7 天的条目", 7},
+	{"清除超过 30 天的条目", 30},
+	{"清除超过 90 天的条目", 90},
+	{"全部清空", 0},
+}
+
 // ────────────────────────────────────────────────────────────
 // Model
 // ────────────────────────────────────────────────────────────
@@ -139,6 +169,12 @@ type Model struct {
 	promptModified    bool           // 是否有未保存的修改
 	promptLoaded      bool           // 是否已加载内容
 	promptSaveFocused bool           // 焦点是否在"保存"按钮上（而非 textarea）
+
+	// ── 词典管理视图 ──
+	dictFile    string       // 词典文件路径
+	dictCursor  int          // 清理选项光标位置
+	dictConfirm bool         // 是否处于二次确认状态
+	dictInfo    *dictInfoMsg // 最近获取的词典统计信息
 }
 
 // New 创建并初始化 TUI Model。
@@ -184,6 +220,12 @@ func New(cfg *config.Config, cfgPath string) Model {
 		promptFile = config.DefaultPromptFile()
 	}
 
+	// 计算词典文件路径
+	dictFile := cfg.Proxy.DictFile
+	if dictFile == "" {
+		dictFile = config.DefaultDictFile()
+	}
+
 	// 初始化提示词多行编辑器
 	ta := textarea.New()
 	ta.Placeholder = "在此输入提示词模板，可使用 {{.TargetLang}} 变量..."
@@ -201,6 +243,7 @@ func New(cfg *config.Config, cfgPath string) Model {
 		logViewport: vp,
 		promptArea:  ta,
 		promptPath:  promptFile,
+		dictFile:    dictFile,
 	}
 }
 
@@ -277,6 +320,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, clearStatusCmd()
 
+	// 词典统计信息已获取
+	case dictInfoMsg:
+		m.dictInfo = &msg
+		return m, nil
+
+	// 词典清理操作完成
+	case dictClearResultMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("✗ 词典清理失败：%v", msg.err)
+			m.statusErr = true
+		} else {
+			m.statusMsg = fmt.Sprintf("✓ %s — 已清除 %d 条", msg.label, msg.cleared)
+			m.statusErr = false
+		}
+		m.dictConfirm = false
+		// 刷新词典统计
+		return m, tea.Batch(clearStatusCmd(), loadDictInfoCmd(m.dictFile))
+
 	// 键盘事件：路由到当前视图的处理函数
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -301,6 +362,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLogKey(msg)
 	case TabPrompt:
 		return m.handlePromptKey(msg)
+	case TabDict:
+		return m.handleDictKey(msg)
 	}
 	return m, nil
 }
@@ -318,6 +381,8 @@ func (m Model) handleStatusKey(key string) (tea.Model, tea.Cmd) {
 		return m.switchToLog()
 	case "4":
 		return m.switchToPrompt()
+	case "5":
+		return m.switchToDict()
 	}
 	return m, nil
 }
@@ -356,6 +421,9 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "4":
 		return m.switchToPrompt()
 
+	case "5":
+		return m.switchToDict()
+
 	case "enter":
 		if m.focusIdx == numConfigInputs {
 			// 焦点在保存按钮上：执行保存
@@ -393,6 +461,8 @@ func (m Model) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchToConfig()
 	case "4":
 		return m.switchToPrompt()
+	case "5":
+		return m.switchToDict()
 	case "tab":
 		m.activeTab = TabStatus
 		return m, nil
@@ -510,6 +580,13 @@ func (m Model) switchToPrompt() (tea.Model, tea.Cmd) {
 	return m, m.promptArea.Focus()
 }
 
+// switchToDict 切换到词典管理视图并加载统计信息。
+func (m Model) switchToDict() (tea.Model, tea.Cmd) {
+	m.activeTab = TabDict
+	m.dictConfirm = false
+	return m, loadDictInfoCmd(m.dictFile)
+}
+
 // ── 焦点管理辅助 ──────────────────────────────────────────────
 
 // nextFocus 将焦点移到下一个可聚焦项（输入框循环到保存按钮，再回到第一个输入框）。
@@ -604,6 +681,8 @@ func (m Model) View() string {
 		body = m.renderLog()
 	case TabPrompt:
 		body = m.renderPrompt()
+	case TabDict:
+		body = m.renderDict()
 	}
 
 	// 计算 header 和 footer 占用的行数，将 body 裁剪到剩余高度
@@ -616,7 +695,7 @@ func (m Model) View() string {
 	}
 
 	// 对非 viewport 类视图（状态、配置）裁剪到可用高度
-	if m.activeTab == TabStatus || m.activeTab == TabConfig {
+	if m.activeTab == TabStatus || m.activeTab == TabConfig || m.activeTab == TabDict {
 		lines := strings.Split(body, "\n")
 		if len(lines) > availH {
 			lines = lines[:availH]
@@ -664,6 +743,7 @@ func (m Model) renderTabs() string {
 		{TabConfig, "[2] 配置"},
 		{TabLog, "[3] 日志"},
 		{TabPrompt, "[4] 提示词"},
+		{TabDict, "[5] 词典"},
 	}
 
 	var parts []string
@@ -708,7 +788,7 @@ func (m Model) renderFooter() string {
 func (m Model) helpText() string {
 	switch m.activeTab {
 	case TabStatus:
-		return "1/2/3/4 切换标签  •  Tab 下一个  •  q 退出"
+		return "1/2/3/4/5 切换标签  •  Tab 下一个  •  q 退出"
 	case TabConfig:
 		saveBtnHint := "Tab/↓ 到保存按钮后 Enter 保存"
 		if m.focusIdx == numConfigInputs {
@@ -730,6 +810,8 @@ func (m Model) helpText() string {
 			return styles.FocusedInputStyle.Render("Enter 保存") + "  •  Tab/Esc 返回编辑器  •  1/2/3/4 切换标签" + modHint
 		}
 		return "Tab 切换到保存按钮  •  Esc 返回  •  1/2/3/4 切换标签" + modHint
+	case TabDict:
+		return "↑/↓ 选择  •  Enter 执行  •  R 刷新统计  •  1/2/3/4 切换  •  q 退出"
 	}
 	return ""
 }
@@ -824,7 +906,7 @@ func (m Model) renderStatus() string {
 
 	// ── 提示 ──
 	sb.WriteString("\n  ")
-	sb.WriteString(styles.DimStyle.Render("按 [2] 进入配置视图编辑以上参数，按 [3] 查看运行日志，按 [4] 编辑提示词"))
+	sb.WriteString(styles.DimStyle.Render("按 [2] 进入配置视图编辑以上参数，按 [3] 查看运行日志，按 [4] 编辑提示词，按 [5] 管理词典"))
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -949,6 +1031,142 @@ func (m Model) renderPrompt() string {
 	return header + "\n" + m.promptArea.View() + saveBtn
 }
 
+// ── 词典管理视图键盘处理 ────────────────────────────────────────
+
+// handleDictKey 处理词典管理视图中的键盘事件。
+func (m Model) handleDictKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	// 二次确认模式下只接受 y/n
+	if m.dictConfirm {
+		switch key {
+		case "y", "Y":
+			opt := dictCleanOptions[m.dictCursor]
+			m.dictConfirm = false
+			return m, clearDictCmd(m.dictFile, opt.days, opt.label)
+		case "n", "N", "esc":
+			m.dictConfirm = false
+			return m, nil
+		}
+		return m, nil
+	}
+
+	switch key {
+	case "q":
+		return m, tea.Quit
+	case "1":
+		m.activeTab = TabStatus
+		return m, nil
+	case "2":
+		return m.switchToConfig()
+	case "3":
+		return m.switchToLog()
+	case "4":
+		return m.switchToPrompt()
+	case "tab":
+		m.activeTab = TabStatus
+		return m, nil
+	case "up", "k":
+		if m.dictCursor > 0 {
+			m.dictCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.dictCursor < len(dictCleanOptions)-1 {
+			m.dictCursor++
+		}
+		return m, nil
+	case "enter":
+		m.dictConfirm = true
+		return m, nil
+	case "r", "R":
+		// 手动刷新词典统计
+		return m, loadDictInfoCmd(m.dictFile)
+	}
+	return m, nil
+}
+
+// ── 词典管理视图 ────────────────────────────────────────────
+
+// renderDict 渲染词典管理视图。
+func (m Model) renderDict() string {
+	var sb strings.Builder
+
+	dividerW := 44
+	if m.width-4 < dividerW {
+		dividerW = m.width - 4
+	}
+
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.TitleStyle.Render("词典管理"))
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.SeparatorStyle.Render(strings.Repeat("─", dividerW)))
+	sb.WriteString("\n\n")
+
+	// 词典信息
+	if m.dictInfo != nil {
+		sb.WriteString("  ")
+		sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "文件路径")))
+		sb.WriteString(styles.ValueStyle.Render(m.dictInfo.filePath))
+		sb.WriteString("\n")
+
+		sb.WriteString("  ")
+		sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "总条目数")))
+		sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d 条", m.dictInfo.totalEntries)))
+		sb.WriteString("\n")
+
+		sb.WriteString("  ")
+		sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "文件大小")))
+		if m.dictInfo.fileSize >= 0 {
+			sb.WriteString(styles.ValueStyle.Render(formatFileSize(m.dictInfo.fileSize)))
+		} else {
+			sb.WriteString(styles.DimStyle.Render("（文件不存在）"))
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("  ")
+		sb.WriteString(styles.DimStyle.Render("正在加载词典信息…"))
+		sb.WriteString("\n")
+	}
+
+	// 分隔线
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.SeparatorStyle.Render("── 清理选项 "))
+	sb.WriteString("\n\n")
+
+	// 二次确认模式
+	if m.dictConfirm {
+		opt := dictCleanOptions[m.dictCursor]
+		sb.WriteString("  ")
+		sb.WriteString(styles.WarnStyle.Render(fmt.Sprintf("  ⚠ 确认要「%s」吗？此操作不可撤销！", opt.label)))
+		sb.WriteString("\n\n")
+		sb.WriteString("  ")
+		sb.WriteString(styles.FocusedInputStyle.Render("  [y] 确认执行"))
+		sb.WriteString("    ")
+		sb.WriteString(styles.DimStyle.Render("[n/Esc] 取消"))
+		sb.WriteString("\n")
+		return sb.String()
+	}
+
+	// 清理选项列表
+	for i, opt := range dictCleanOptions {
+		if i == m.dictCursor {
+			sb.WriteString("  ")
+			sb.WriteString(styles.FocusedInputStyle.Render("  ▶ " + opt.label))
+		} else {
+			sb.WriteString("  ")
+			sb.WriteString(styles.DimStyle.Render("    " + opt.label))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.DimStyle.Render("  ↑/↓ 选择  •  Enter 执行  •  R 刷新统计"))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
 // ────────────────────────────────────────────────────────────
 // Tea 命令函数
 // ────────────────────────────────────────────────────────────
@@ -1030,9 +1248,125 @@ func savePromptCmd(path, content string) tea.Cmd {
 	}
 }
 
+// loadDictInfoCmd 异步获取词典文件的统计信息。
+// 直接读取词典 JSON 文件来获取条目数和文件大小，不需要实际的 DiskDict 实例。
+func loadDictInfoCmd(dictPath string) tea.Cmd {
+	return func() tea.Msg {
+		info := dictInfoMsg{
+			filePath: dictPath,
+			fileSize: -1,
+		}
+
+		// 获取文件大小
+		if fi, err := os.Stat(dictPath); err == nil {
+			info.fileSize = fi.Size()
+		}
+
+		// 读取文件统计条目数
+		data, err := os.ReadFile(dictPath)
+		if err == nil {
+			var raw map[string]json.RawMessage
+			if json.Unmarshal(data, &raw) == nil {
+				info.totalEntries = len(raw)
+			}
+		}
+
+		return info
+	}
+}
+
+// clearDictCmd 异步执行词典清理操作。
+// days <= 0 表示全部清空；> 0 表示清除超过指定天数的条目。
+// 由于 TUI 模式没有运行中的 DiskDict 实例，直接操作 JSON 文件。
+func clearDictCmd(dictPath string, days int, label string) tea.Cmd {
+	return func() tea.Msg {
+		// 读取当前词典文件
+		data, err := os.ReadFile(dictPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return dictClearResultMsg{cleared: 0, label: label}
+			}
+			return dictClearResultMsg{err: err, label: label}
+		}
+
+		// 全部清空：直接写入空对象
+		if days <= 0 {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(data, &raw); err != nil {
+				return dictClearResultMsg{err: err, label: label}
+			}
+			count := len(raw)
+			if err := os.WriteFile(dictPath, []byte("{}"), 0o644); err != nil {
+				return dictClearResultMsg{err: err, label: label}
+			}
+			return dictClearResultMsg{cleared: count, label: label}
+		}
+
+		// 按时间清理
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return dictClearResultMsg{err: err, label: label}
+		}
+
+		threshold := time.Now().AddDate(0, 0, -days)
+		kept := make(map[string]json.RawMessage, len(raw))
+		cleared := 0
+
+		for k, v := range raw {
+			// 尝试解析新格式以获取时间戳
+			var entry struct {
+				V string `json:"v"`
+				T int64  `json:"t"`
+			}
+			if err := json.Unmarshal(v, &entry); err == nil && entry.V != "" {
+				// 新格式：检查时间戳
+				if entry.T > 0 && time.Unix(entry.T, 0).After(threshold) {
+					kept[k] = v
+				} else {
+					// T == 0 (旧格式升级但无时间戳) 或过期 → 清除
+					cleared++
+				}
+			} else {
+				// 旧格式（纯字符串）：无时间戳，视为最旧 → 清除
+				cleared++
+			}
+		}
+
+		// 写回
+		result, err := json.Marshal(kept)
+		if err != nil {
+			return dictClearResultMsg{err: err, label: label}
+		}
+		if err := os.WriteFile(dictPath, result, 0o644); err != nil {
+			return dictClearResultMsg{err: err, label: label}
+		}
+
+		return dictClearResultMsg{cleared: cleared, label: label}
+	}
+}
+
 // ────────────────────────────────────────────────────────────
 // 辅助函数
 // ────────────────────────────────────────────────────────────
+
+// formatFileSize 将字节数格式化为人类可读的文件大小。
+func formatFileSize(bytes int64) string {
+	const (
+		kb = 1024
+		mb = kb * 1024
+		gb = mb * 1024
+	)
+	switch {
+	case bytes >= gb:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(gb))
+	case bytes >= mb:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(mb))
+	case bytes >= kb:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
 
 // readLastLines 从文件中读取最后 n 行内容。
 // 若文件不存在，返回友好提示而非错误。

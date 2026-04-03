@@ -7,12 +7,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // diskEntry 是磁盘词典链表节点中存储的条目
 type diskEntry struct {
-	key   string // dictKey(targetLang, text)
-	value string // 翻译结果
+	key       string    // dictKey(targetLang, text)
+	value     string    // 翻译结果
+	updatedAt time.Time // 最后写入/更新时间
+}
+
+// dictValueJSON 是词典 JSON 文件中单个条目的存储格式。
+// V 为翻译结果，T 为 Unix 秒时间戳（0 表示旧格式数据，无时间信息）。
+type dictValueJSON struct {
+	V string `json:"v"`
+	T int64  `json:"t"`
 }
 
 // DiskDict 是基于 JSON 文件的持久化翻译词典，内置访问顺序 LRU 驱逐。
@@ -36,6 +45,16 @@ type DiskDict struct {
 	writeCh    chan struct{}            // 写盘信号
 	stopCh     chan struct{}            // 停止信号
 	done       chan struct{}            // writeLoop 退出信号
+}
+
+// DictStats 词典统计信息
+type DictStats struct {
+	// TotalEntries 当前总条目数
+	TotalEntries int
+	// FilePath 词典文件磁盘路径
+	FilePath string
+	// FileSize 词典文件大小（字节），-1 表示文件不存在或无法读取
+	FileSize int64
 }
 
 // NewDiskDict 创建并加载磁盘词典。
@@ -92,6 +111,7 @@ func (d *DiskDict) Get(text, targetLang string) (string, bool) {
 func (d *DiskDict) Put(text, targetLang, value string) {
 	key := dictKey(targetLang, text)
 	changed := false
+	now := time.Now()
 
 	d.mu.Lock()
 
@@ -105,6 +125,7 @@ func (d *DiskDict) Put(text, targetLang, value string) {
 		}
 		// 值有变化：更新并移至头部
 		entry.value = value
+		entry.updatedAt = now
 		d.order.MoveToFront(elem)
 		d.generation++
 		changed = true
@@ -115,7 +136,7 @@ func (d *DiskDict) Put(text, targetLang, value string) {
 				d.evictLocked()
 			}
 		}
-		entry := &diskEntry{key: key, value: value}
+		entry := &diskEntry{key: key, value: value, updatedAt: now}
 		elem := d.order.PushFront(entry)
 		d.items[key] = elem
 		d.generation++
@@ -141,6 +162,81 @@ func (d *DiskDict) Len() int {
 	return n
 }
 
+// Stats 返回词典的统计信息（条目数、文件路径、文件大小）。
+func (d *DiskDict) Stats() DictStats {
+	d.mu.RLock()
+	total := len(d.items)
+	d.mu.RUnlock()
+
+	s := DictStats{
+		TotalEntries: total,
+		FilePath:     d.path,
+		FileSize:     -1,
+	}
+	if info, err := os.Stat(d.path); err == nil {
+		s.FileSize = info.Size()
+	}
+	return s
+}
+
+// ClearAll 清空词典中的全部条目，并触发写盘。
+// 返回被清除的条目数。
+func (d *DiskDict) ClearAll() (int, error) {
+	d.mu.Lock()
+	count := len(d.items)
+	// 重置内存数据结构
+	d.items = make(map[string]*list.Element)
+	d.order.Init()
+	d.generation++
+	d.mu.Unlock()
+
+	// 立即同步写盘，确保文件被清空
+	if err := d.flush(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// ClearOlderThan 清除最后更新时间早于 now-days 天的所有条目，并触发写盘。
+// 返回被清除的条目数。
+// days <= 0 时等同于 ClearAll（清除全部）。
+func (d *DiskDict) ClearOlderThan(days int) (int, error) {
+	if days <= 0 {
+		return d.ClearAll()
+	}
+
+	threshold := time.Now().AddDate(0, 0, -days)
+	count := 0
+
+	d.mu.Lock()
+	// 遍历链表，收集需要删除的节点（从尾到头，避免修改链表影响迭代）
+	var toRemove []*list.Element
+	for elem := d.order.Back(); elem != nil; elem = elem.Prev() {
+		entry := elem.Value.(*diskEntry)
+		// updatedAt 为零值说明是从旧格式加载的（无时间戳），视为最旧的条目
+		if entry.updatedAt.IsZero() || entry.updatedAt.Before(threshold) {
+			toRemove = append(toRemove, elem)
+		}
+	}
+	for _, elem := range toRemove {
+		entry := elem.Value.(*diskEntry)
+		delete(d.items, entry.key)
+		d.order.Remove(elem)
+		count++
+	}
+	if count > 0 {
+		d.generation++
+	}
+	d.mu.Unlock()
+
+	if count > 0 {
+		if err := d.flush(); err != nil {
+			return count, err
+		}
+	}
+	return count, nil
+}
+
 // Close 停止后台写盘 goroutine 并做最后一次写盘。
 // 先等待 writeLoop 完全退出，再执行最终 flush，避免并发写盘竞争。
 func (d *DiskDict) Close() error {
@@ -163,6 +259,10 @@ func (d *DiskDict) evictLocked() {
 }
 
 // load 从磁盘加载词典数据，并重建内存链表（按 JSON 迭代顺序，作为初始访问顺序）。
+// 支持两种 JSON 格式：
+//   - 新格式：map[string]{"v": "翻译结果", "t": 1234567890}
+//   - 旧格式：map[string]"翻译结果"（纯字符串，无时间戳）
+//
 // 若加载后条目数超过 maxEntries，则截断至上限（保留链表靠前的条目）。
 func (d *DiskDict) load() error {
 	// 确保父目录存在
@@ -180,8 +280,9 @@ func (d *DiskDict) load() error {
 	}
 	defer f.Close()
 
-	var raw map[string]string
-	if err := json.NewDecoder(f).Decode(&raw); err != nil {
+	// 先尝试解码为新格式
+	var rawJSON map[string]json.RawMessage
+	if err := json.NewDecoder(f).Decode(&rawJSON); err != nil {
 		// 文件损坏时使用空词典，不返回错误（防止代理无法启动）
 		return nil
 	}
@@ -189,9 +290,29 @@ func (d *DiskDict) load() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// 重建链表（JSON map 迭代顺序不确定，视为随机初始访问顺序）
-	for k, v := range raw {
-		entry := &diskEntry{key: k, value: v}
+	for k, raw := range rawJSON {
+		entry := &diskEntry{key: k}
+
+		// 先尝试新格式（JSON 对象）
+		var newFmt dictValueJSON
+		if err := json.Unmarshal(raw, &newFmt); err == nil && newFmt.V != "" {
+			entry.value = newFmt.V
+			if newFmt.T > 0 {
+				entry.updatedAt = time.Unix(newFmt.T, 0)
+			}
+			// T == 0 时 updatedAt 保持零值，视为旧条目
+		} else {
+			// 旧格式：纯字符串
+			var oldFmt string
+			if err := json.Unmarshal(raw, &oldFmt); err == nil {
+				entry.value = oldFmt
+				// 旧格式无时间戳，updatedAt 保持零值
+			} else {
+				// 无法解析，跳过该条目
+				continue
+			}
+		}
+
 		elem := d.order.PushBack(entry) // PushBack：旧条目视为"较久访问"，新请求会升到头部
 		d.items[k] = elem
 	}
@@ -216,11 +337,15 @@ func (d *DiskDict) flush() error {
 		d.mu.RUnlock()
 		return nil // 没有未写盘的变更
 	}
-	// 按链表顺序构建快照（头部=最近访问）
-	snapshot := make(map[string]string, d.order.Len())
+	// 按链表顺序构建快照（头部=最近访问），写入新格式（含时间戳）
+	snapshot := make(map[string]dictValueJSON, d.order.Len())
 	for elem := d.order.Front(); elem != nil; elem = elem.Next() {
 		entry := elem.Value.(*diskEntry)
-		snapshot[entry.key] = entry.value
+		var t int64
+		if !entry.updatedAt.IsZero() {
+			t = entry.updatedAt.Unix()
+		}
+		snapshot[entry.key] = dictValueJSON{V: entry.value, T: t}
 	}
 	d.mu.RUnlock()
 
@@ -264,6 +389,10 @@ func (d *DiskDict) writeLoop() {
 		}
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────
+// DictEngine：三级缓存翻译引擎
+// ─────────────────────────────────────────────────────────────────
 
 // DictEngine 是三级缓存翻译引擎：
 //

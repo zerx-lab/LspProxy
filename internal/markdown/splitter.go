@@ -249,14 +249,62 @@ func PlaceholderRe() *regexp.Regexp {
 	return placeholderRe
 }
 
-// Protect 将文本中的所有代码块（围栏代码块和行内代码）替换为编号占位符。
+// ─────────────────────────────────────────────────────────────────────────────
+// 编程术语保护（Technical Term Protection）
+//
+// LSP 文档中存在大量编程领域专用词汇（如 Panic、throws、deprecated 等），
+// 这些词语在普通语言语境下有其他含义，但在编程文档中是固定术语，不应被翻译。
+//
+// 保护策略：在占位符替换阶段，把已知技术术语也替换为 $CODE_N$ 占位符，
+// 使翻译引擎完全跳过它们，与代码块享有同等保护级别。
+//
+// 匹配规则：
+//   - 仅匹配单词边界（\b），避免替换正常单词中出现的子串
+//   - 大小写不敏感（panic / Panic / PANIC 均匹配）
+//   - 词表集中在 techTermRe 中维护，便于增删
+// ─────────────────────────────────────────────────────────────────────────────
+
+// techTermRe 匹配编程领域不应被翻译的技术术语。
+// 使用单词边界 \b 确保精确匹配，使用 (?i) 进行大小写不敏感匹配。
+//
+// 收录原则：
+//   - 在自然语言中有截然不同的含义、翻译后会产生语义错误的词语
+//   - 不包含在反引号代码块中的词语（已由 Split() 保护）
+//   - 翻译后语义正确的词语（如 deprecated→"弃用"）不在此列
+var techTermRe = regexp.MustCompile(
+	`(?i)\b(` +
+		// 异常 / 错误处理：这些词在编程上下文有固定含义，直译会产生语义错误
+		// panic → "恐慌"（错误），throws → "投掷"（错误），raises → "提升"（错误）
+		`panic|throws?|raises?` +
+		`)\b`,
+)
+
+// protectTechTerms 将文本中的已知技术术语替换为 $CODE_N$ 占位符。
+//
+// 仅在占位符掩码文本（masked）上调用，此时代码块已被替换为 $CODE_N$，
+// 因此不会对代码块内的内容产生重复替换。
+func protectTechTerms(masked string, codes []string) (string, []string) {
+	result := techTermRe.ReplaceAllStringFunc(masked, func(term string) string {
+		idx := len(codes)
+		codes = append(codes, term)
+		return fmt.Sprintf(placeholderFmt, idx)
+	})
+	return result, codes
+}
+
+// Protect 将文本中的所有代码块（围栏代码块和行内代码）以及编程技术术语替换为编号占位符。
+//
+// 处理顺序：
+//  1. 按 Markdown 结构提取代码块（围栏块、行内代码），替换为 $CODE_N$
+//  2. 在掩码文本上扫描已知技术术语，同样替换为 $CODE_N$（序号延续）
 //
 // 返回：
 //   - masked: 替换后的文本，可直接送入翻译引擎
-//   - codes:  被提取的代码块原文，按编号顺序存储，用于 [Restore] 还原
+//   - codes:  被提取的原文（代码块 + 技术术语），按编号顺序存储，用于 [Restore] 还原
 //
-// 若文本不含任何代码块，codes 为空切片，masked 等于原文。
+// 若文本不含任何代码块或技术术语，codes 为空切片，masked 等于原文。
 func Protect(text string) (masked string, codes []string) {
+	// ── 第一步：保护 Markdown 代码块 ──
 	segments := Split(text)
 	var sb strings.Builder
 	sb.Grow(len(text))
@@ -268,7 +316,12 @@ func Protect(text string) (masked string, codes []string) {
 			sb.WriteString(seg.Content)
 		}
 	}
-	return sb.String(), codes
+	masked = sb.String()
+
+	// ── 第二步：保护编程技术术语 ──
+	masked, codes = protectTechTerms(masked, codes)
+
+	return masked, codes
 }
 
 // Restore 将翻译后文本中的占位符还原为原始代码块内容。

@@ -6,19 +6,25 @@ import (
 	"log/slog"
 
 	"github.com/zerx-lab/LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/internal/glossary"
 )
 
-// New 根据配置创建对应的翻译引擎，并包装三级缓存（内存 LRU + 磁盘词典）。
+// New 根据配置创建对应的翻译引擎，并包装三级缓存（内存 LRU + 磁盘词典）和术语词汇本。
 //
-// 支持的引擎类型：
-//   - "google"：使用 Google 免费翻译 API，无需密钥
-//   - "openai"：使用 OpenAI 兼容 API（支持 DeepSeek、Qwen、Ollama 等）
+// lspName 为当前代理的 LSP 可执行文件名（如 "rust-analyzer"），用于加载 LSP 专属词汇本。
+// 传空字符串时仅使用全局词汇本。
 //
-// 缓存策略：
-//  1. 内存 LRU：按字节大小限制（cfg.Proxy.CacheSize MB，默认 30MB）
-//  2. 磁盘词典：持久化到 cfg.Proxy.DictFile（JSON 格式），进程退出不丢失
-//  3. 在线翻译：前两级均未命中时调用底层引擎
-func New(cfg *config.Config, logger *slog.Logger) (Engine, error) {
+// 引擎链路（从外到内）：
+//
+//	GlossaryEngine → DictEngine（内存LRU + 磁盘词典 + 在线翻译）
+//
+// 查询顺序：
+//  1. LSP 专属词汇本
+//  2. 全局词汇本
+//  3. 内存 LRU 缓存
+//  4. 磁盘 JSON 词典
+//  5. 在线翻译 API
+func New(cfg *config.Config, lspName string, logger *slog.Logger) (Engine, error) {
 	var base Engine
 
 	switch cfg.Translate.Engine {
@@ -65,8 +71,22 @@ func New(cfg *config.Config, logger *slog.Logger) (Engine, error) {
 	disk, err := NewDiskDict(dictPath, dictMaxEntries)
 	if err != nil {
 		// 磁盘词典初始化失败时降级为纯内存缓存，不影响代理正常运行
-		return NewCachedEngine(base, memoryLimit), nil
+		base = NewCachedEngine(base, memoryLimit)
+	} else {
+		base = NewDictEngine(base, memoryLimit, disk)
 	}
 
-	return NewDictEngine(base, memoryLimit, disk), nil
+	// ── 术语词汇本层（最高优先级）──
+	glossaryDir := cfg.Proxy.GlossaryDir
+	if glossaryDir == "" {
+		glossaryDir = config.DefaultGlossaryDir()
+	}
+
+	var lspNames []string
+	if lspName != "" {
+		lspNames = []string{lspName}
+	}
+
+	g := glossary.New(glossaryDir, lspNames, logger)
+	return glossary.NewGlossaryEngine(base, g, lspName, logger), nil
 }

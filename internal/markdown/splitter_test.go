@@ -281,3 +281,101 @@ func assertEqual(t *testing.T, seg Segment, kind SegmentKind, content string) {
 		t.Errorf("Content: 期望 %q，得到 %q", content, seg.Content)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 技术术语保护测试
+// ─────────────────────────────────────────────────────────────────────────────
+
+func TestProtect_TechTermPanic(t *testing.T) {
+	// "Panic" 出现在普通文本中，应被保护为占位符
+	input := "Panic if the path value is malformed."
+	masked, codes := Protect(input)
+
+	if strings.Contains(masked, "Panic") || strings.Contains(masked, "panic") {
+		t.Errorf("技术术语 Panic 未被替换为占位符，masked = %q", masked)
+	}
+	if len(codes) == 0 {
+		t.Fatal("codes 应包含被保护的术语")
+	}
+
+	// 还原后应与原文完全一致
+	restored := Restore(masked, codes)
+	if restored != input {
+		t.Errorf("还原失败:\n  期望: %q\n  实际: %q", input, restored)
+	}
+}
+
+func TestProtect_TechTermCaseInsensitive(t *testing.T) {
+	// 大小写均应被匹配
+	cases := []struct {
+		input string
+		term  string
+	}{
+		{"panic: index out of range", "panic"},
+		{"This function Panic if invalid", "Panic"},
+		{"PANIC on nil pointer", "PANIC"},
+		{"throws an error when", "throws"},
+		{"raises RuntimeError", "raises"},
+	}
+	for _, tc := range cases {
+		masked, codes := Protect(tc.input)
+		if strings.Contains(masked, tc.term) {
+			t.Errorf("输入 %q：术语 %q 未被替换，masked = %q", tc.input, tc.term, masked)
+		}
+		restored := Restore(masked, codes)
+		if restored != tc.input {
+			t.Errorf("输入 %q：还原失败，得到 %q", tc.input, restored)
+		}
+	}
+}
+
+func TestProtect_TechTermWordBoundary(t *testing.T) {
+	// 词表中的词语不应匹配嵌入在其他单词中的子串
+	cases := []struct {
+		input     string
+		shouldHit bool // 是否应该命中保护
+	}{
+		// "panic" 作为独立单词 → 应保护
+		{"This will panic at runtime", true},
+		// "panicky" 含有 panic 子串但不是独立单词 → 不应保护
+		{"The panicky user ran away", false},
+		// "throws" 独立单词 → 应保护
+		{"This function throws when invalid", true},
+		// "raises" 独立单词 → 应保护
+		{"raises RuntimeError on failure", true},
+	}
+	for _, tc := range cases {
+		_, codes := Protect(tc.input)
+		hasTerm := len(codes) > 0
+		// 注意：代码块也会计入 codes，此用例无代码块，codes 全为术语
+		if tc.shouldHit && !hasTerm {
+			t.Errorf("输入 %q：期望术语被保护，但 codes 为空", tc.input)
+		}
+		if !tc.shouldHit && hasTerm {
+			t.Errorf("输入 %q：不期望术语被保护，但 codes = %v", tc.input, codes)
+		}
+	}
+}
+
+func TestProtect_TechTermWithCodeBlock(t *testing.T) {
+	// 技术术语和代码块混合出现时，占位符编号应连续递增
+	input := "Panic if `path` is nil"
+	masked, codes := Protect(input)
+
+	// 应有 2 个占位符：`path`（KindCode）和 Panic（技术术语）
+	if len(codes) != 2 {
+		t.Fatalf("期望 2 个占位符，得到 %d: codes = %v", len(codes), codes)
+	}
+
+	if strings.Contains(masked, "Panic") {
+		t.Errorf("Panic 未被占位符替换: %q", masked)
+	}
+	if strings.Contains(masked, "`path`") {
+		t.Errorf("`path` 未被占位符替换: %q", masked)
+	}
+
+	restored := Restore(masked, codes)
+	if restored != input {
+		t.Errorf("还原失败:\n  期望: %q\n  实际: %q", input, restored)
+	}
+}

@@ -60,6 +60,13 @@ type ProxyConfig struct {
 	// 超时后立即返回原文并在后台继续翻译以预热缓存。
 	// 默认 600ms，对大多数在线 API 首次请求体验较好。
 	TranslationTimeout int `mapstructure:"translation_timeout"`
+	// GlossaryDir 专业术语词汇本目录路径，默认 ~/.local/share/lsp-proxy/glossary/
+	// 目录下每个 .toml 文件对应一个词汇本：
+	//   _global.toml    — 全局词汇本，对所有 LSP 生效
+	//   <lsp>.toml      — LSP 专属词汇本，如 rust-analyzer.toml、clangd.toml
+	// 查询优先级：LSP 专属 > 全局 > 缓存 > 在线翻译
+	// 设为空字符串可禁用词汇本功能。
+	GlossaryDir string `mapstructure:"glossary_dir"`
 }
 
 // LogConfig 日志相关配置
@@ -107,6 +114,15 @@ func DefaultDictFile() string {
 	return filepath.Join(homeDir, ".local", "share", "lsp-proxy", "dict.json")
 }
 
+// DefaultGlossaryDir 返回默认术语词汇本目录路径 (~/.local/share/lsp-proxy/glossary/)
+func DefaultGlossaryDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".local", "share", "lsp-proxy", "glossary")
+	}
+	return filepath.Join(homeDir, ".local", "share", "lsp-proxy", "glossary")
+}
+
 // setDefaults 向 viper 实例注册所有默认值
 func setDefaults(v *viper.Viper) {
 	// 翻译引擎默认使用 Google 免费接口
@@ -123,6 +139,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.dict_file", DefaultDictFile())
 	v.SetDefault("proxy.dict_max_entries", 100000) // 磁盘词典最大条目数
 	v.SetDefault("proxy.translation_timeout", 600) // 单位毫秒，0 表示无限等待
+	v.SetDefault("proxy.glossary_dir", DefaultGlossaryDir())
 
 	// 日志默认配置
 	v.SetDefault("log.level", "info")
@@ -218,6 +235,7 @@ func (c *Config) Save(path string) error {
 	v.Set("proxy.dict_file", c.Proxy.DictFile)
 	v.Set("proxy.dict_max_entries", c.Proxy.DictMaxEntries)
 	v.Set("proxy.translation_timeout", c.Proxy.TranslationTimeout)
+	v.Set("proxy.glossary_dir", c.Proxy.GlossaryDir)
 	v.Set("log.level", c.Log.Level)
 	v.Set("log.file", c.Log.File)
 
