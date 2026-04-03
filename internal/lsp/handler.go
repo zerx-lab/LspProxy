@@ -1288,8 +1288,10 @@ func isLetterRune(r rune) bool {
 //   - " = , -> … "        → false（无词语）
 //   - " = , Returns the " → true（"Re" 已满足 2 个连续字母）
 func hasTranslatableWords(masked string) bool {
+	// 先移除 $CODE_N$ 占位符，避免占位符中的 "CODE" 被误判为可翻译词语
+	cleaned := markdown.PlaceholderRe().ReplaceAllString(masked, " ")
 	run := 0
-	for _, r := range masked {
+	for _, r := range cleaned {
 		if isLetterRune(r) {
 			run++
 			if run >= 2 {
