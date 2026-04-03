@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zerx-lab/LspProxy/internal/glossary"
 	"log/slog"
+
+	"github.com/zerx-lab/LspProxy/internal/glossary"
 )
 
 // newLogger 创建一个丢弃所有日志的 slog.Logger，避免测试输出噪音
@@ -99,21 +100,34 @@ func TestGlossary_Lookup_Priority(t *testing.T) {
 	}
 }
 
-func TestGlossary_Lookup_CaseInsensitive(t *testing.T) {
+func TestGlossary_Lookup_CaseSensitive(t *testing.T) {
 	dir := t.TempDir()
 
 	content := `[terms]
 "Borrow Checker" = "借用检查器"
+"Send" = "Send"
 `
 	writeToml(t, dir, "_global.toml", content)
 
 	g := glossary.New(dir, nil, newLogger())
 	defer g.Close()
 
-	for _, input := range []string{"Borrow Checker", "borrow checker", "BORROW CHECKER", "borrow Checker"} {
-		v, ok := g.Lookup(input, "")
-		if !ok || v != "借用检查器" {
-			t.Errorf("大小写不敏感匹配失败，输入 %q，得到 (%q, %v)", input, v, ok)
+	// 精确大小写匹配应命中
+	v, ok := g.Lookup("Borrow Checker", "")
+	if !ok || v != "借用检查器" {
+		t.Errorf("精确匹配失败，期望 (借用检查器, true)，得到 (%q, %v)", v, ok)
+	}
+
+	v, ok = g.Lookup("Send", "")
+	if !ok || v != "Send" {
+		t.Errorf("精确匹配失败，期望 (Send, true)，得到 (%q, %v)", v, ok)
+	}
+
+	// 不同大小写不应命中
+	for _, input := range []string{"borrow checker", "BORROW CHECKER", "borrow Checker", "send", "SEND"} {
+		_, ok := g.Lookup(input, "")
+		if ok {
+			t.Errorf("大小写敏感模式下 %q 不应命中词汇本", input)
 		}
 	}
 }

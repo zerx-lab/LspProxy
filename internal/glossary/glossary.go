@@ -21,7 +21,7 @@
 //
 // LSP 专属词汇本 > 全局词汇本 > 缓存 > 在线翻译
 //
-// 匹配方式为大小写不敏感的**精确匹配**，仅对整段待翻译文本有效，
+// 匹配方式为大小写敏感的**精确匹配**，仅对整段待翻译文本有效，
 // 不做子串替换（避免污染翻译引擎的输入）。
 package glossary
 
@@ -30,11 +30,14 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/zerx-lab/LspProxy/internal/glossary/builtin"
 )
 
 // ─────────────────────────────────────────────
@@ -49,7 +52,7 @@ const (
 	exampleComment = `# LspProxy 专业术语词汇本
 # 格式说明：
 #   [terms] 节下每行为一条术语映射
-#   key   = 原文（英文），不区分大小写，精确匹配整段文本
+#   key   = 原文（英文），区分大小写，精确匹配整段文本
 #   value = 译文（目标语言）
 #
 # 示例：
@@ -71,7 +74,7 @@ type tomlFile struct {
 	Terms map[string]string `toml:"terms"`
 }
 
-// termMap 是规范化后的查询表：key = strings.ToLower(原文)
+// termMap 是术语查询表：key = TrimSpace(原文)，大小写敏感
 type termMap map[string]string
 
 // Glossary 管理全局词汇本和各 LSP 专属词汇本，支持热重载。
@@ -144,11 +147,11 @@ func New(dir string, lspNames []string, logger *slog.Logger) *Glossary {
 //
 // 查询顺序：LSP 专属词汇本（lspName）→ 全局词汇本。
 // lspName 为空时仅查全局词汇本。
-// 匹配大小写不敏感，仅支持整段文本精确匹配。
+// 匹配大小写敏感，仅支持整段文本精确匹配。
 //
 // 命中返回 (译文, true)；未命中返回 ("", false)。
 func (g *Glossary) Lookup(text, lspName string) (string, bool) {
-	key := strings.ToLower(strings.TrimSpace(text))
+	key := strings.TrimSpace(text)
 	if key == "" {
 		return "", false
 	}
@@ -220,15 +223,121 @@ func (g *Glossary) GlossaryDir() string {
 }
 
 // ─────────────────────────────────────────────
+// TUI 数据查询接口
+// ─────────────────────────────────────────────
+
+// FileInfo 描述一个词汇本文件的基本信息（用于 TUI 展示）。
+type FileInfo struct {
+	Name      string // 文件名（如 _global.toml、rust-analyzer.toml）
+	Path      string // 完整路径
+	TermCount int    // 术语条目数
+	FileSize  int64  // 文件大小（字节），-1 表示无法读取
+}
+
+// TermEntry 描述一个术语条目（用于 TUI 展示）。
+type TermEntry struct {
+	Key   string // 原文
+	Value string // 译文
+}
+
+// ListFiles 列出词汇本目录下所有 .toml 文件及其统计信息。
+// 结果按文件名排序，_global.toml 始终排在第一位。
+func (g *Glossary) ListFiles() []FileInfo {
+	entries, err := os.ReadDir(g.dir)
+	if err != nil {
+		return nil
+	}
+
+	var files []FileInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".toml") {
+			continue
+		}
+
+		path := filepath.Join(g.dir, entry.Name())
+		info := FileInfo{
+			Name:     entry.Name(),
+			Path:     path,
+			FileSize: -1,
+		}
+
+		if fi, err := os.Stat(path); err == nil {
+			info.FileSize = fi.Size()
+		}
+
+		// 读取术语条目数
+		if m, err := g.loadFile(path); err == nil {
+			info.TermCount = len(m)
+		}
+
+		files = append(files, info)
+	}
+
+	// 排序：_global.toml 置顶，其余按文件名字母序
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].Name == globalFileName {
+			return true
+		}
+		if files[j].Name == globalFileName {
+			return false
+		}
+		return files[i].Name < files[j].Name
+	})
+
+	return files
+}
+
+// LoadTerms 读取指定词汇本文件的所有术语条目。
+// 返回按 key 字母序排列的条目列表。
+func (g *Glossary) LoadTerms(filePath string) ([]TermEntry, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("读取词汇本失败 [%s]: %w", filePath, err)
+	}
+
+	var f tomlFile
+	if err := toml.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("解析 TOML 失败 [%s]: %w", filePath, err)
+	}
+
+	entries := make([]TermEntry, 0, len(f.Terms))
+	for k, v := range f.Terms {
+		entries = append(entries, TermEntry{Key: k, Value: v})
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Key < entries[j].Key
+	})
+
+	return entries, nil
+}
+
+// ─────────────────────────────────────────────
 // 内部：加载 / 重载
 // ─────────────────────────────────────────────
 
-// ensureDir 确保词汇本目录存在，并在全局词汇本文件不存在时写入示例文件。
+// ensureDir 确保词汇本目录存在，释放内嵌的默认词汇本，并在全局词汇本不存在时写入示例文件。
+//
+// 内嵌资源释放策略：已存在的文件不会被覆盖，保护用户编辑的内容。
 func (g *Glossary) ensureDir() error {
 	if err := os.MkdirAll(g.dir, 0o755); err != nil {
 		return fmt.Errorf("创建词汇本目录失败 [%s]: %w", g.dir, err)
 	}
 
+	// ── 增量合并内嵌默认词汇本（新文件直接写入，已有文件仅追加新词条）──
+	if added, err := builtin.MergeExtract(g.dir); err != nil {
+		g.logger.Warn("部分内嵌词汇本合并失败",
+			slog.String("dir", g.dir),
+			slog.String("error", err.Error()),
+		)
+	} else if added > 0 {
+		g.logger.Info("内嵌默认词汇本已合并",
+			slog.String("dir", g.dir),
+			slog.Int("added", added),
+		)
+	}
+
+	// ── 确保全局词汇本存在（内嵌资源中可能没有 _global.toml）──
 	globalPath := filepath.Join(g.dir, globalFileName)
 	if _, err := os.Stat(globalPath); os.IsNotExist(err) {
 		if err := os.WriteFile(globalPath, []byte(exampleComment), 0o644); err != nil {
@@ -258,8 +367,8 @@ func (g *Glossary) loadFile(path string) (termMap, error) {
 
 	m := make(termMap, len(f.Terms))
 	for k, v := range f.Terms {
-		// key 规范化：ToLower + TrimSpace，使查询时大小写不敏感
-		m[strings.ToLower(strings.TrimSpace(k))] = v
+		// key 规范化：仅 TrimSpace，保持大小写敏感
+		m[strings.TrimSpace(k)] = v
 	}
 	return m, nil
 }

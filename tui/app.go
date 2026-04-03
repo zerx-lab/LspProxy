@@ -1,11 +1,12 @@
 // Package tui 实现 LspProxy 的终端管理界面（TUI）。
-// 使用 Bubble Tea 框架，提供"状态"、"配置"、"日志"三个视图标签页。
+// 使用 Bubble Tea 框架，提供"状态"、"配置"、"日志"等视图标签页。
 package tui
 
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/zerx-lab/LspProxy/internal/config"
+	"github.com/zerx-lab/LspProxy/internal/glossary"
 	"github.com/zerx-lab/LspProxy/tui/styles"
 )
 
@@ -31,11 +33,12 @@ import (
 type viewTab int
 
 const (
-	TabStatus viewTab = iota // 状态视图：只读展示当前配置
-	TabConfig                // 配置视图：表单编辑配置
-	TabLog                   // 日志视图：滚动查看日志文件
-	TabPrompt                // 提示词编辑视图
-	TabDict                  // 词典管理视图
+	TabStatus   viewTab = iota // 状态视图：只读展示当前配置
+	TabConfig                  // 配置视图：表单编辑配置
+	TabLog                     // 日志视图：滚动查看日志文件
+	TabPrompt                  // 提示词编辑视图
+	TabDict                    // 词典管理视图
+	TabGlossary                // 术语词汇本管理视图
 )
 
 // numConfigInputs 配置表单的输入框数量
@@ -136,6 +139,18 @@ var dictCleanOptions = []dictCleanOption{
 	{"全部清空", 0},
 }
 
+// ── 术语词汇本相关消息 ──
+
+// glossaryFilesMsg 携带词汇本目录下的文件列表
+type glossaryFilesMsg []glossary.FileInfo
+
+// glossaryTermsMsg 携带选中词汇本文件的术语条目
+type glossaryTermsMsg struct {
+	fileName string
+	terms    []glossary.TermEntry
+	err      error
+}
+
 // ────────────────────────────────────────────────────────────
 // Model
 // ────────────────────────────────────────────────────────────
@@ -175,6 +190,15 @@ type Model struct {
 	dictCursor  int          // 清理选项光标位置
 	dictConfirm bool         // 是否处于二次确认状态
 	dictInfo    *dictInfoMsg // 最近获取的词典统计信息
+
+	// ── 术语词汇本管理视图 ──
+	glossaryDir       string               // 词汇本目录路径
+	glossaryFiles     []glossary.FileInfo  // 词汇本文件列表
+	glossaryCursor    int                  // 文件列表光标位置
+	glossaryTerms     []glossary.TermEntry // 当前选中文件的术语条目
+	glossaryTermFile  string               // 当前正在查看术语的文件名
+	glossaryViewport  viewport.Model       // 术语列表滚动区域
+	glossaryShowTerms bool                 // 是否正在展示术语列表
 }
 
 // New 创建并初始化 TUI Model。
@@ -226,6 +250,16 @@ func New(cfg *config.Config, cfgPath string) Model {
 		dictFile = config.DefaultDictFile()
 	}
 
+	// 计算词汇本目录路径
+	glossaryDir := cfg.Proxy.GlossaryDir
+	if glossaryDir == "" {
+		glossaryDir = config.DefaultGlossaryDir()
+	}
+
+	// 初始化术语列表 viewport
+	glossaryVP := viewport.New(80, 20)
+	glossaryVP.SetContent(styles.DimStyle.Render("（选择一个词汇本文件后按 Enter 查看术语）"))
+
 	// 初始化提示词多行编辑器
 	ta := textarea.New()
 	ta.Placeholder = "在此输入提示词模板，可使用 {{.TargetLang}} 变量..."
@@ -235,15 +269,17 @@ func New(cfg *config.Config, cfgPath string) Model {
 	ta.ShowLineNumbers = false
 
 	return Model{
-		cfg:         cfg,
-		cfgPath:     cfgPath,
-		activeTab:   TabStatus,
-		inputs:      inputs,
-		focusIdx:    0,
-		logViewport: vp,
-		promptArea:  ta,
-		promptPath:  promptFile,
-		dictFile:    dictFile,
+		cfg:              cfg,
+		cfgPath:          cfgPath,
+		activeTab:        TabStatus,
+		inputs:           inputs,
+		focusIdx:         0,
+		logViewport:      vp,
+		promptArea:       ta,
+		promptPath:       promptFile,
+		dictFile:         dictFile,
+		glossaryDir:      glossaryDir,
+		glossaryViewport: glossaryVP,
 	}
 }
 
@@ -271,6 +307,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.logViewport.Width = msg.Width
 		m.logViewport.Height = vpH
+		m.glossaryViewport.Width = msg.Width
+		m.glossaryViewport.Height = vpH
 		// 宽度变化后，若处于换行模式需按新宽度重新 wrap 内容
 		if len(m.logLines) > 0 {
 			m.setLogViewportContent(false)
@@ -338,6 +376,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 刷新词典统计
 		return m, tea.Batch(clearStatusCmd(), loadDictInfoCmd(m.dictFile))
 
+	// 术语词汇本文件列表已加载
+	case glossaryFilesMsg:
+		m.glossaryFiles = []glossary.FileInfo(msg)
+		// 重置光标（文件列表可能变化）
+		if m.glossaryCursor >= len(m.glossaryFiles) {
+			m.glossaryCursor = 0
+		}
+		return m, nil
+
+	// 术语词汇本条目已加载
+	case glossaryTermsMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("✗ 加载术语失败：%v", msg.err)
+			m.statusErr = true
+			return m, clearStatusCmd()
+		}
+		m.glossaryTerms = msg.terms
+		m.glossaryTermFile = msg.fileName
+		m.glossaryShowTerms = true
+		m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+		m.glossaryViewport.GotoTop()
+		return m, nil
+
 	// 键盘事件：路由到当前视图的处理函数
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -364,6 +425,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePromptKey(msg)
 	case TabDict:
 		return m.handleDictKey(msg)
+	case TabGlossary:
+		return m.handleGlossaryKey(msg)
 	}
 	return m, nil
 }
@@ -383,6 +446,8 @@ func (m Model) handleStatusKey(key string) (tea.Model, tea.Cmd) {
 		return m.switchToPrompt()
 	case "5":
 		return m.switchToDict()
+	case "6":
+		return m.switchToGlossary()
 	}
 	return m, nil
 }
@@ -424,6 +489,9 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "5":
 		return m.switchToDict()
 
+	case "6":
+		return m.switchToGlossary()
+
 	case "enter":
 		if m.focusIdx == numConfigInputs {
 			// 焦点在保存按钮上：执行保存
@@ -463,6 +531,8 @@ func (m Model) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchToPrompt()
 	case "5":
 		return m.switchToDict()
+	case "6":
+		return m.switchToGlossary()
 	case "tab":
 		m.activeTab = TabStatus
 		return m, nil
@@ -587,6 +657,14 @@ func (m Model) switchToDict() (tea.Model, tea.Cmd) {
 	return m, loadDictInfoCmd(m.dictFile)
 }
 
+// switchToGlossary 切换到术语词汇本管理视图并加载文件列表。
+func (m Model) switchToGlossary() (tea.Model, tea.Cmd) {
+	m.blurAll()
+	m.activeTab = TabGlossary
+	m.glossaryShowTerms = false
+	return m, loadGlossaryFilesCmd(m.glossaryDir)
+}
+
 // ── 焦点管理辅助 ──────────────────────────────────────────────
 
 // nextFocus 将焦点移到下一个可聚焦项（输入框循环到保存按钮，再回到第一个输入框）。
@@ -683,6 +761,8 @@ func (m Model) View() string {
 		body = m.renderPrompt()
 	case TabDict:
 		body = m.renderDict()
+	case TabGlossary:
+		body = m.renderGlossary()
 	}
 
 	// 计算 header 和 footer 占用的行数，将 body 裁剪到剩余高度
@@ -695,7 +775,7 @@ func (m Model) View() string {
 	}
 
 	// 对非 viewport 类视图（状态、配置）裁剪到可用高度
-	if m.activeTab == TabStatus || m.activeTab == TabConfig || m.activeTab == TabDict {
+	if m.activeTab == TabStatus || m.activeTab == TabConfig || m.activeTab == TabDict || (m.activeTab == TabGlossary && !m.glossaryShowTerms) {
 		lines := strings.Split(body, "\n")
 		if len(lines) > availH {
 			lines = lines[:availH]
@@ -744,6 +824,7 @@ func (m Model) renderTabs() string {
 		{TabLog, "[3] 日志"},
 		{TabPrompt, "[4] 提示词"},
 		{TabDict, "[5] 词典"},
+		{TabGlossary, "[6] 术语"},
 	}
 
 	var parts []string
@@ -811,7 +892,12 @@ func (m Model) helpText() string {
 		}
 		return "Tab 切换到保存按钮  •  Esc 返回  •  1/2/3/4 切换标签" + modHint
 	case TabDict:
-		return "↑/↓ 选择  •  Enter 执行  •  R 刷新统计  •  1/2/3/4 切换  •  q 退出"
+		return "↑/↓ 选择  •  Enter 执行  •  R 刷新统计  •  1/2/3/4/6 切换  •  q 退出"
+	case TabGlossary:
+		if m.glossaryShowTerms {
+			return "↑/↓/j/k/PgUp/PgDn 滚动术语列表  •  Esc 返回文件列表  •  R 刷新  •  1/2/3/4/5 切换  •  q 退出"
+		}
+		return "↑/↓ 选择  •  Enter 查看术语  •  R 刷新  •  1/2/3/4/5 切换  •  q 退出"
 	}
 	return ""
 }
@@ -906,7 +992,7 @@ func (m Model) renderStatus() string {
 
 	// ── 提示 ──
 	sb.WriteString("\n  ")
-	sb.WriteString(styles.DimStyle.Render("按 [2] 进入配置视图编辑以上参数，按 [3] 查看运行日志，按 [4] 编辑提示词，按 [5] 管理词典"))
+	sb.WriteString(styles.DimStyle.Render("按 [2] 进入配置视图编辑以上参数，按 [3] 查看运行日志，按 [4] 编辑提示词，按 [5] 管理词典，按 [6] 管理术语"))
 	sb.WriteString("\n")
 
 	return sb.String()
@@ -1063,6 +1149,10 @@ func (m Model) handleDictKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchToLog()
 	case "4":
 		return m.switchToPrompt()
+	case "5":
+		return m.switchToDict()
+	case "6":
+		return m.switchToGlossary()
 	case "tab":
 		m.activeTab = TabStatus
 		return m, nil
@@ -1163,6 +1253,227 @@ func (m Model) renderDict() string {
 	sb.WriteString("\n  ")
 	sb.WriteString(styles.DimStyle.Render("  ↑/↓ 选择  •  Enter 执行  •  R 刷新统计"))
 	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// ── 术语词汇本管理视图键盘处理 ────────────────────────────────────
+
+// handleGlossaryKey 处理术语词汇本管理视图中的键盘事件。
+func (m Model) handleGlossaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	// 术语展示模式：viewport 滚动 + Esc 返回
+	if m.glossaryShowTerms {
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc":
+			m.glossaryShowTerms = false
+			return m, nil
+		case "1":
+			m.activeTab = TabStatus
+			return m, nil
+		case "2":
+			return m.switchToConfig()
+		case "3":
+			return m.switchToLog()
+		case "4":
+			return m.switchToPrompt()
+		case "5":
+			return m.switchToDict()
+		case "r", "R":
+			// 刷新当前查看的术语
+			if m.glossaryCursor < len(m.glossaryFiles) {
+				fi := m.glossaryFiles[m.glossaryCursor]
+				return m, loadGlossaryTermsCmd(fi.Path, fi.Name)
+			}
+			return m, nil
+		default:
+			// j/k、方向键、PgUp/PgDn 由 viewport 处理
+			var cmd tea.Cmd
+			m.glossaryViewport, cmd = m.glossaryViewport.Update(msg)
+			return m, cmd
+		}
+	}
+
+	// 文件列表模式
+	switch key {
+	case "q":
+		return m, tea.Quit
+	case "1":
+		m.activeTab = TabStatus
+		return m, nil
+	case "2":
+		return m.switchToConfig()
+	case "3":
+		return m.switchToLog()
+	case "4":
+		return m.switchToPrompt()
+	case "5":
+		return m.switchToDict()
+	case "tab":
+		m.activeTab = TabStatus
+		return m, nil
+	case "up", "k":
+		if m.glossaryCursor > 0 {
+			m.glossaryCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.glossaryCursor < len(m.glossaryFiles)-1 {
+			m.glossaryCursor++
+		}
+		return m, nil
+	case "enter":
+		// 加载选中文件的术语条目
+		if m.glossaryCursor < len(m.glossaryFiles) {
+			fi := m.glossaryFiles[m.glossaryCursor]
+			return m, loadGlossaryTermsCmd(fi.Path, fi.Name)
+		}
+		return m, nil
+	case "r", "R":
+		// 刷新文件列表
+		return m, loadGlossaryFilesCmd(m.glossaryDir)
+	}
+	return m, nil
+}
+
+// ── 术语词汇本管理视图渲染 ────────────────────────────────────
+
+// renderGlossary 渲染术语词汇本管理视图。
+func (m Model) renderGlossary() string {
+	// 术语展示模式：用 viewport 显示术语列表
+	if m.glossaryShowTerms {
+		return m.renderGlossaryTermView()
+	}
+
+	// 文件列表模式
+	var sb strings.Builder
+
+	dividerW := 56
+	if m.width-4 < dividerW {
+		dividerW = m.width - 4
+	}
+
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.TitleStyle.Render("术语词汇本"))
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.SeparatorStyle.Render(strings.Repeat("─", dividerW)))
+	sb.WriteString("\n\n")
+
+	// 目录路径
+	sb.WriteString("  ")
+	sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "目录路径")))
+	sb.WriteString(styles.ValueStyle.Render(m.glossaryDir))
+	sb.WriteString("\n")
+
+	// 文件数量
+	sb.WriteString("  ")
+	sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "词汇本数量")))
+	sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d 个", len(m.glossaryFiles))))
+	sb.WriteString("\n")
+
+	// 总术语数
+	totalTerms := 0
+	for _, f := range m.glossaryFiles {
+		totalTerms += f.TermCount
+	}
+	sb.WriteString("  ")
+	sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "总术语数")))
+	sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d 条", totalTerms)))
+	sb.WriteString("\n")
+
+	// 分隔线
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.SeparatorStyle.Render("── 词汇本文件 "))
+	sb.WriteString("\n\n")
+
+	if len(m.glossaryFiles) == 0 {
+		sb.WriteString("  ")
+		sb.WriteString(styles.DimStyle.Render("  （目录下暂无词汇本文件）"))
+		sb.WriteString("\n")
+	} else {
+		for i, f := range m.glossaryFiles {
+			// 文件名（含标注）
+			label := f.Name
+			if f.Name == "_global.toml" {
+				label = f.Name + "  " + styles.WarnStyle.Render("(全局)")
+			}
+
+			termInfo := fmt.Sprintf("%d 条术语", f.TermCount)
+			sizeInfo := ""
+			if f.FileSize >= 0 {
+				sizeInfo = "  " + formatFileSize(f.FileSize)
+			}
+
+			line := fmt.Sprintf("%-36s %s%s", label, termInfo, sizeInfo)
+
+			if i == m.glossaryCursor {
+				sb.WriteString("  ")
+				sb.WriteString(styles.FocusedInputStyle.Render("  ▶ " + line))
+			} else {
+				sb.WriteString("  ")
+				sb.WriteString(styles.DimStyle.Render("    " + line))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.DimStyle.Render("  ↑/↓ 选择  •  Enter 查看术语  •  R 刷新"))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// renderGlossaryTermView 渲染术语展示视图（viewport 模式）。
+func (m Model) renderGlossaryTermView() string {
+	termCount := styles.DimStyle.Render(fmt.Sprintf("（共 %d 条术语）", len(m.glossaryTerms)))
+	fileName := styles.ValueStyle.Render(m.glossaryTermFile)
+	header := "  " + styles.TitleStyle.Render("术语词汇本") +
+		"  " + fileName +
+		"  " + termCount + "\n\n"
+
+	return header + m.glossaryViewport.View()
+}
+
+// renderGlossaryTerms 将术语条目格式化为 viewport 可显示的文本内容。
+func (m Model) renderGlossaryTerms() string {
+	if len(m.glossaryTerms) == 0 {
+		return styles.DimStyle.Render("  （此词汇本暂无术语条目）")
+	}
+
+	var sb strings.Builder
+
+	// 计算 key 列的最大显示宽度（用于对齐）
+	maxKeyW := 0
+	for _, t := range m.glossaryTerms {
+		if w := lipgloss.Width(t.Key); w > maxKeyW {
+			maxKeyW = w
+		}
+	}
+	// 限制最大宽度，避免过长的 key 撑坏布局
+	if maxKeyW > 40 {
+		maxKeyW = 40
+	}
+
+	for i, t := range m.glossaryTerms {
+		// 行号（右对齐）
+		num := styles.DimStyle.Render(fmt.Sprintf("  %4d. ", i+1))
+		// key（左对齐，固定宽度）
+		key := styles.LabelStyle.Render(fmt.Sprintf("%-*s", maxKeyW, t.Key))
+		// 分隔符
+		sep := styles.SeparatorStyle.Render(" → ")
+		// value
+		val := styles.ValueStyle.Render(t.Value)
+
+		sb.WriteString(num)
+		sb.WriteString(key)
+		sb.WriteString(sep)
+		sb.WriteString(val)
+		sb.WriteString("\n")
+	}
 
 	return sb.String()
 }
@@ -1342,6 +1653,36 @@ func clearDictCmd(dictPath string, days int, label string) tea.Cmd {
 		}
 
 		return dictClearResultMsg{cleared: cleared, label: label}
+	}
+}
+
+// loadGlossaryFilesCmd 异步加载词汇本目录下的文件列表。
+func loadGlossaryFilesCmd(glossaryDir string) tea.Cmd {
+	return func() tea.Msg {
+		// 创建一个临时 Glossary 实例来读取文件列表
+		// （TUI 模式下无运行中的 Glossary 实例）
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		g := glossary.New(glossaryDir, nil, logger)
+		defer g.Close()
+
+		files := g.ListFiles()
+		return glossaryFilesMsg(files)
+	}
+}
+
+// loadGlossaryTermsCmd 异步加载指定词汇本文件的术语条目。
+func loadGlossaryTermsCmd(filePath, fileName string) tea.Cmd {
+	return func() tea.Msg {
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		g := glossary.New(filepath.Dir(filePath), nil, logger)
+		defer g.Close()
+
+		terms, err := g.LoadTerms(filePath)
+		return glossaryTermsMsg{
+			fileName: fileName,
+			terms:    terms,
+			err:      err,
+		}
 	}
 }
 
