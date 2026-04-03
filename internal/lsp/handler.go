@@ -230,6 +230,29 @@ func (h *Handler) DrainPending() []json.RawMessage {
 	return ids
 }
 
+// InterceptProxyResponse 判断来自编辑器的消息是否是代理注入请求的响应。
+// 当代理向编辑器发送 workspace/diagnostic/refresh 等请求时，编辑器的响应
+// 会通过 stdin 回到代理。这些响应不应该被转发给真实的 LSP 服务端，
+// 否则 LSP 服务端会因为收到未知请求的响应而崩溃。
+//
+// 如果是代理注入请求的响应，消费该 ID 并返回 true，调用方应丢弃该消息。
+func (h *Handler) InterceptProxyResponse(msg *BaseMessage) bool {
+	if !msg.IsResponse() {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	key := idKey(msg.ID)
+	if _, ok := h.refreshIDs[key]; ok {
+		delete(h.refreshIDs, key)
+		h.logger.Debug("拦截代理注入请求的响应，不转发给 LSP",
+			slog.String("id", string(msg.ID)),
+		)
+		return true
+	}
+	return false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ProcessServerMessage — 主入口
 // ─────────────────────────────────────────────────────────────────────────────

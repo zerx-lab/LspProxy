@@ -237,6 +237,11 @@ func (p *Proxy) forwardClientToLsp(
 				slog.String("error", err.Error()),
 			)
 		} else {
+			// 拦截代理注入请求的响应（如 workspace/diagnostic/refresh），
+			// 这些响应不应转发给 LSP 服务端，否则会导致 LSP 崩溃。
+			if handler.InterceptProxyResponse(&msg) {
+				continue
+			}
 			// 记录请求：建立 ID → Method 的映射
 			handler.TrackRequest(&msg)
 			p.logger.Debug("收到客户端请求",
@@ -274,6 +279,12 @@ func (p *Proxy) forwardLspToClient(
 	// 深度 512：足以应对突发翻译完成，翻译 goroutine 投入后立即返回不阻塞。
 	writeCh := make(chan []byte, 512)
 
+	// writeMu + writeClosed 保护 writeCh 的发送操作。
+	// 当 LSP 进程退出后 writeCh 会被关闭，但后台异步翻译 goroutine
+	// 可能仍在运行，完成后尝试发送会导致 panic。
+	var writeMu sync.Mutex
+	writeClosed := false
+
 	// 写出 goroutine：串行从 writeCh 取帧，逐一写入 clientWriter。
 	// 串行写入保证帧不交叉；若 clientWriter（os.Stdout）暂时阻塞，
 	// 只有此 goroutine 挂起，翻译 goroutine 和读取循环不受影响。
@@ -294,9 +305,25 @@ func (p *Proxy) forwardLspToClient(
 		}
 	}()
 
+	// safeClose 安全关闭 writeCh，确保不会有 goroutine 再向其发送。
+	safeClose := func() {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if !writeClosed {
+			writeClosed = true
+			close(writeCh)
+		}
+	}
+
 	// enqueue 将一帧投入写出队列，供翻译 goroutine 和 asyncPush 共用。
-	// 若队列已满（writeCh 深度 512 全占满，说明写出端严重滞后），丢弃并记录警告。
+	// 使用 writeMu 保护，防止向已关闭的 channel 发送导致 panic。
 	enqueue := func(data []byte) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if writeClosed {
+			p.logger.Warn("写出队列已关闭，丢弃帧", slog.Int("bytes", len(data)))
+			return
+		}
 		select {
 		case writeCh <- data:
 		default:
@@ -318,7 +345,7 @@ func (p *Proxy) forwardLspToClient(
 		select {
 		case <-ctx.Done():
 			p.logger.Debug("forwardLspToClient: context 已取消，退出")
-			close(writeCh)
+			safeClose()
 			writerDone.Wait()
 			return
 		default:
@@ -331,7 +358,7 @@ func (p *Proxy) forwardLspToClient(
 			} else {
 				p.logger.Error("读取 LSP 消息失败", slog.String("error", err.Error()))
 			}
-			close(writeCh)
+			safeClose()
 			writerDone.Wait()
 			return
 		}
