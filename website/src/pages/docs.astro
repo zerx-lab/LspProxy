@@ -33,6 +33,7 @@ const sidebarItems = [
     section: '高级',
     items: [
       { href: '#tui', label: 'TUI 管理界面' },
+      { href: '#glossary', label: '词汇本' },
       { href: '#architecture', label: '架构原理' },
       { href: '#contributing', label: '贡献指南' },
     ]
@@ -61,46 +62,65 @@ const codeQuickStart = `<code><span style="color: var(--text-dim);"># 代理 rus
 <span style="color: var(--text-dim);"># 启动 TUI 管理界面</span>
 <span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">--tui</span></code>`;
 
-const codeConfig = `<code><span class="syntax-comment"># 翻译引擎：google | openai | ollama</span>
-<span class="syntax-var">engine</span>: <span class="syntax-string">google</span>
+const codeConfig = `<code><span class="syntax-comment"># 翻译引擎配置</span>
+<span class="syntax-var">translate</span>:
+  <span class="syntax-var">engine</span>: <span class="syntax-string">google</span>  <span class="syntax-comment"># google | openai</span>
+  <span class="syntax-comment"># OpenAI 兼容 API（DeepSeek / Qwen / Ollama）</span>
+  <span class="syntax-var">openai</span>:
+    <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-your-api-key&quot;</span>
+    <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>  <span class="syntax-comment"># 可选</span>
+    <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>              <span class="syntax-comment"># 可选</span>
+    <span class="syntax-var">thinking_mode</span>: <span class="syntax-string">&quot;auto&quot;</span>              <span class="syntax-comment"># auto | enabled | disabled</span>
+    <span class="syntax-var">prompt_file</span>: <span class="syntax-string">&quot;~/.config/lsp-proxy/prompt.txt&quot;</span>
 
-<span class="syntax-comment"># OpenAI 兼容 API（DeepSeek / Qwen / Ollama）</span>
-<span class="syntax-var">openai</span>:
-  <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-your-api-key&quot;</span>
-  <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>  <span class="syntax-comment"># 可选</span>
-  <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>              <span class="syntax-comment"># 可选</span>
-  <span class="syntax-var">prompt</span>: <span class="syntax-string">&quot;&quot;</span>                          <span class="syntax-comment"># 自定义翻译 prompt</span>
-
-<span class="syntax-comment"># 缓存配置</span>
-<span class="syntax-var">cache</span>:
-  <span class="syntax-var">memory_limit</span>: <span class="syntax-num">52428800</span>  <span class="syntax-comment"># 内存上限（字节），默认 50MB</span>
-  <span class="syntax-var">dict_path</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/dict.json&quot;</span>
-
-<span class="syntax-comment"># 超时配置</span>
-<span class="syntax-var">timeout</span>:
-  <span class="syntax-var">fast_path</span>: <span class="syntax-string">&quot;50ms&quot;</span>    <span class="syntax-comment"># 快速路径超时</span>
-  <span class="syntax-var">wait_window</span>: <span class="syntax-string">&quot;600ms&quot;</span> <span class="syntax-comment"># 等待翻译完成窗口</span>
+<span class="syntax-comment"># 代理行为配置</span>
+<span class="syntax-var">proxy</span>:
+  <span class="syntax-var">cache_size</span>: <span class="syntax-num">30</span>              <span class="syntax-comment"># 内存上限（MB），默认 30</span>
+  <span class="syntax-var">dict_file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/dict.json&quot;</span>
+  <span class="syntax-var">dict_max_entries</span>: <span class="syntax-num">100000</span>   <span class="syntax-comment"># 磁盘词典最大条目数</span>
+  <span class="syntax-var">translation_timeout</span>: <span class="syntax-num">600</span>   <span class="syntax-comment"># 毫秒，0 = 无限等待</span>
+  <span class="syntax-var">target_lang</span>: <span class="syntax-string">&quot;zh-CN&quot;</span>
+  <span class="syntax-var">glossary_dir</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/glossary/&quot;</span>
 
 <span class="syntax-comment"># 日志配置</span>
 <span class="syntax-var">log</span>:
   <span class="syntax-var">level</span>: <span class="syntax-string">&quot;info&quot;</span>   <span class="syntax-comment"># debug | info | warn | error</span>
-  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/proxy.log&quot;</span></code>`;
+  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/proxy.log&quot;</span></code>`;
 
-const codeEngineGoogle = `<code># 无需额外配置
-engine: google</code>`;
+const codeEngineGoogle = `<code>translate:
+  engine: google  # 无需额外配置</code>`;
 
-const codeEngineDeepSeek = `<code>engine: openai
-openai:
-  api_key: &quot;sk-your-key&quot;
-  base_url: &quot;https://api.deepseek.com&quot;
-  model: &quot;deepseek-chat&quot;</code>`;
+const codeEngineDeepSeek = `<code>translate:
+  engine: openai
+  openai:
+    api_key: &quot;sk-your-key&quot;
+    base_url: &quot;https://api.deepseek.com&quot;
+    model: &quot;deepseek-chat&quot;</code>`;
 
-const codeEngineOllama = `<code>engine: ollama
-openai:
-  base_url: &quot;http://localhost:11434/v1&quot;
-  model: &quot;qwen2.5:7b&quot;</code>`;
+const codeEngineQwen = `<code>translate:
+  engine: openai
+  openai:
+    api_key: &quot;sk-your-key&quot;
+    base_url: &quot;https://dashscope.aliyuncs.com/compatible-mode/v1&quot;
+    model: &quot;qwen-plus&quot;</code>`;
+
+const codeEngineOllama = `<code>translate:
+  engine: openai
+  openai:
+    base_url: &quot;http://localhost:11434/v1&quot;
+    model: &quot;qwen2.5:7b&quot;</code>`;
 
 const codeTui = `<code><span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">--tui</span></code>`;
+
+const codeGlossary = `<code><span class="syntax-comment"># _global.toml — 全局术语映射</span>
+<span class="syntax-string">"Returns"</span> = <span class="syntax-string">"返回"</span>
+<span class="syntax-string">"Panics"</span> = <span class="syntax-string">"触发 panic"</span>
+<span class="syntax-string">"Deprecated"</span> = <span class="syntax-string">"已废弃"</span>
+
+<span class="syntax-comment"># rust-analyzer.toml — Rust 专属术语</span>
+<span class="syntax-string">"lifetime"</span> = <span class="syntax-string">"生命周期"</span>
+<span class="syntax-string">"borrow checker"</span> = <span class="syntax-string">"借用检查器"</span>
+<span class="syntax-string">"ownership"</span> = <span class="syntax-string">"所有权"</span></code>`;
 
 const codeNeovim = `<code><span class="syntax-keyword">local</span> lspconfig = <span class="syntax-keyword">require</span>(<span class="syntax-string">'lspconfig'</span>)
 
@@ -286,7 +306,7 @@ go vet ./...</code>`;
         <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">安装 LspProxy</h2>
 
         <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
-          需要 Go 1.21 或更高版本。使用 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">go install</code> 一键安装：
+          需要 Go 1.24.2 或更高版本。使用 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">go install</code> 一键安装：
         </p>
 
         <div class="code-block mb-4">
@@ -336,7 +356,7 @@ go vet ./...</code>`;
         <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">配置文件</h2>
 
         <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
-          默认配置文件位于 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">~/.config/LspProxy/config.yaml</code>。
+          默认配置文件位于 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">~/.config/lsp-proxy/config.yaml</code>。
           可通过 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">--config</code> 标志指定其他路径。
         </p>
 
@@ -385,6 +405,20 @@ go vet ./...</code>`;
             </div>
           </div>
 
+          <!-- Qwen -->
+          <div class="border rounded overflow-hidden" style="border-color: var(--border);">
+            <div class="flex items-center gap-3 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+              <span class="tag">qwen</span>
+              <span class="text-xs font-mono font-medium" style="color: var(--text-heading);">通义千问（阿里云）</span>
+            </div>
+            <div class="p-4">
+              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">使用阿里云通义千问 API，中文语境理解优秀，国内访问稳定。配置方式与 DeepSeek 相同，设置 <code style="color: var(--text-heading);">engine: openai</code> 并指定对应 base_url 即可。</p>
+              <div class="code-block">
+                <pre class="p-3 text-xs font-mono" style="color: var(--text);" set:html={codeEngineQwen}></pre>
+              </div>
+            </div>
+          </div>
+
           <!-- Ollama -->
           <div class="border rounded overflow-hidden" style="border-color: var(--border);">
             <div class="flex items-center gap-3 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
@@ -392,10 +426,23 @@ go vet ./...</code>`;
               <span class="text-xs font-mono font-medium" style="color: var(--text-heading);">Ollama（本地）</span>
             </div>
             <div class="p-4">
-              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">完全本地运行，数据不出境。需要先安装并启动 Ollama，推荐使用 qwen2.5 模型。</p>
+              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">完全本地运行，数据不出境。需先安装并启动 Ollama，推荐 qwen2.5 模型。同样使用 <code style="color: var(--text-heading);">engine: openai</code>，将 base_url 指向本地服务。</p>
               <div class="code-block">
                 <pre class="p-3 text-xs font-mono" style="color: var(--text);" set:html={codeEngineOllama}></pre>
               </div>
+            </div>
+          </div>
+
+          <!-- thinking_mode -->
+          <div class="p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <p class="text-xs font-mono font-semibold mb-2" style="color: var(--text-heading);">thinking_mode — 推理模式控制</p>
+            <p class="text-xs font-mono leading-relaxed mb-2" style="color: var(--text-dim);">
+              对于支持推理/思考模式的模型（Qwen3、DeepSeek-R1、豆包 Thinking 等），LspProxy 会自动关闭推理以加速翻译响应。可通过 <code style="color: var(--text-heading);">translate.openai.thinking_mode</code> 手动控制：
+            </p>
+            <div class="space-y-1 text-xs font-mono" style="color: var(--text-dim);">
+              <div><code style="color: var(--green);">auto</code>（默认）— 自动识别已知思考模型并关闭推理</div>
+              <div><code style="color: var(--blue);">disabled</code> — 强制关闭推理，更快，适合翻译任务</div>
+              <div><code style="color: var(--purple);">enabled</code> — 强制开启推理，适合需要高精度的场景</div>
             </div>
           </div>
 
@@ -410,17 +457,26 @@ go vet ./...</code>`;
         <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">缓存策略</h2>
 
         <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
-          LspProxy 采用三级缓存架构，已翻译的内容会被缓存，后续请求直接从缓存返回，毫秒级响应。
+          LspProxy 采用四级缓存架构，已翻译的内容会被缓存，后续请求直接从缓存返回，毫秒级响应。
         </p>
 
         <div class="space-y-3 mb-6">
+          <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <div class="flex-shrink-0">
+              <span class="tag" style="color: var(--yellow); border-color: rgba(234,179,8,0.2);">零延迟</span>
+            </div>
+            <div>
+              <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 0: 词汇本（Glossary）</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">优先级最高。TOML 格式的术语映射表，支持 LSP 专属（如 rust-analyzer.toml）和全局（_global.toml）两类，命中后直接返回，不走任何翻译 API。</p>
+            </div>
+          </div>
           <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
             <div class="flex-shrink-0">
               <span class="tag border-green-900/30" style="color: var(--green);">~μs</span>
             </div>
             <div>
               <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 1: 内存 LRU 缓存</p>
-              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">最快，微秒级。使用 LRU 算法，默认限制 50MB。进程重启后清空。</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">微秒级。使用 LRU 算法，默认限制 30MB（<code style="color: var(--text-heading);">proxy.cache_size</code>）。进程重启后清空。</p>
             </div>
           </div>
           <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
@@ -429,16 +485,16 @@ go vet ./...</code>`;
             </div>
             <div>
               <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 2: 磁盘 JSON 词典</p>
-              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">毫秒级。持久化存储，进程重启后仍可用。存储在 dict.json 文件中。</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">毫秒级。持久化存储，进程重启后仍可用。存储在 <code style="color: var(--text-heading);">proxy.dict_file</code> 指定的 JSON 文件中，默认最多 10 万条。</p>
             </div>
           </div>
           <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
             <div class="flex-shrink-0">
-              <span class="tag border-purple-900/30" style="color: var(--purple);">~网络</span>
+              <span class="tag border-purple-900/30" style="color: var(--purple);">~Telnet</span>
             </div>
             <div>
               <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 3: 在线翻译 API</p>
-              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">网络请求。50ms 超时快速路径，超时后透传原文并后台预热缓存。</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">网络请求。内置 50ms 快速路径：缓存未命中时先等待 50ms，超时后立即透传原文，同时后台继续翻译并预热缓存。</p>
             </div>
           </div>
         </div>
@@ -522,23 +578,72 @@ go vet ./...</code>`;
         <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">TUI 管理界面</h2>
 
         <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
-          LspProxy 内置了基于 Bubble Tea 的 TUI 管理界面，可实时查看翻译日志和管理配置：
+          LspProxy 内置了基于 Bubble Tea 的独立 TUI 管理界面，以 <code style="color: var(--text-heading);">--tui</code> 模式单独启动（与代理模式互斥），提供 6 个功能标签页：
         </p>
 
-        <div class="code-block mb-4">
+        <div class="code-block mb-6">
           <pre class="p-4 text-xs font-mono" set:html={codeTui}></pre>
         </div>
 
-        <div class="code-block">
-          <pre class="p-4 text-xs font-mono leading-loose" style="color: var(--text-muted);">┌─ LspProxy TUI ──────────────────────────────────┐
-│  <span style="color: var(--green);">●</span> rust-analyzer  <span style="color: var(--text-dim);">· 运行中</span>                    │
-│                                                  │
-│  <span style="color: var(--text);">最近翻译：</span>                                       │
-│  <span style="color: var(--blue);">[hover]</span> Returns a reference... → 返回引用...    │
-│  <span style="color: var(--blue);">[hover]</span> Creates a new instance → 创建一个新实例 │
-│                                                  │
-│  [q] 退出   [c] 配置   [l] 日志                   │
-└──────────────────────────────────────────────────┘</pre>
+        <div class="space-y-2 mb-6">
+          {[
+            { tab: 'Status',   desc: '只读配置摘要：引擎、缓存路径、日志级别等当前生效参数一览。' },
+            { tab: 'Config',   desc: '11 个字段的表单编辑，修改后按保存按钮持久化到 config.yaml。' },
+            { tab: 'Log',      desc: '滚动查看最近 500 行代理日志，支持 D 键清空，可切换换行/横向滚动模式。' },
+            { tab: 'Prompt',   desc: '多行编辑系统提示词文件（prompt.txt），支持热重载，保存后立即生效。' },
+            { tab: 'Dict',     desc: '词典统计（条目数/文件大小）+ 四种清理选项（7/30/90 天及全部清空），带二次确认。' },
+            { tab: 'Glossary', desc: '词汇本文件列表，查看各 .toml 文件中的术语条目（key → value 对齐格式）。' },
+          ].map(item => (
+            <div class="flex gap-4 p-3 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+              <code class="flex-shrink-0 text-xs font-mono px-2 py-0.5 rounded self-start" style="background: var(--bg-secondary); color: var(--green);">{item.tab}</code>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">{item.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <!-- Glossary -->
+      <section id="glossary" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">高级</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">词汇本（Glossary）</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          词汇本是优先级最高的翻译来源，适合固定专业术语的翻译映射。命中词汇本后直接返回，不调用任何翻译 API，也不消耗缓存名额。
+        </p>
+
+        <div class="space-y-4 mb-6">
+          <div class="p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <p class="text-xs font-mono font-semibold mb-2" style="color: var(--text-heading);">目录结构</p>
+            <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-dim);">
+              词汇本目录默认位于 <code style="color: var(--text-heading);">~/.local/share/lsp-proxy/glossary/</code>，可通过 <code style="color: var(--text-heading);">proxy.glossary_dir</code> 修改。目录下每个 <code style="color: var(--text-heading);">.toml</code> 文件对应一个词汇本：
+            </p>
+            <div class="code-block">
+              <pre class="p-3 text-xs font-mono leading-relaxed" style="color: var(--text-muted);">glossary/
+├── _global.toml          # 全局词汇本，对所有 LSP 生效
+├── rust-analyzer.toml    # rust-analyzer 专属
+└── clangd.toml           # clangd 专属</pre>
+            </div>
+          </div>
+
+          <div class="p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <p class="text-xs font-mono font-semibold mb-2" style="color: var(--text-heading);">词汇本格式（TOML）</p>
+            <div class="code-block">
+              <pre class="p-3 text-xs font-mono leading-relaxed" style="color: var(--text);" set:html={codeGlossary}></pre>
+            </div>
+          </div>
+
+          <div class="p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <p class="text-xs font-mono font-semibold mb-2" style="color: var(--text-heading);">查询优先级</p>
+            <div class="space-y-1 text-xs font-mono" style="color: var(--text-dim);">
+              <div><span style="color: var(--yellow);">①</span> LSP 专属词汇本（如 <code style="color: var(--text-heading);">rust-analyzer.toml</code>）</div>
+              <div><span style="color: var(--green);">②</span> 全局词汇本（<code style="color: var(--text-heading);">_global.toml</code>）</div>
+              <div><span style="color: var(--blue);">③</span> 内存 LRU 缓存</div>
+              <div><span style="color: var(--purple);">④</span> 磁盘 JSON 词典</div>
+              <div style="color: var(--text-dim);">⑤ 在线翻译 API</div>
+            </div>
+          </div>
         </div>
       </section>
 

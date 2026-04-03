@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -151,6 +153,22 @@ type glossaryTermsMsg struct {
 	err      error
 }
 
+// ── 术语编辑相关消息 ──
+
+// glossarySaveResultMsg 术语保存完成消息
+type glossarySaveResultMsg struct {
+	filePath string
+	fileName string
+	err      error
+}
+
+// editorFinishedMsg 外部编辑器关闭后触发的消息
+type editorFinishedMsg struct {
+	filePath string
+	fileName string
+	err      error
+}
+
 // ────────────────────────────────────────────────────────────
 // Model
 // ────────────────────────────────────────────────────────────
@@ -199,6 +217,21 @@ type Model struct {
 	glossaryTermFile  string               // 当前正在查看术语的文件名
 	glossaryViewport  viewport.Model       // 术语列表滚动区域
 	glossaryShowTerms bool                 // 是否正在展示术语列表
+
+	// ── 术语编辑状态 ──
+	glossaryEditMode      bool            // 是否处于编辑模式（术语列表中可移动光标并增删）
+	glossaryTermCursor    int             // 术语列表光标位置（编辑模式下有效）
+	glossaryEditActive    bool            // 保留字段（兼容旧初始化代码，不再实际使用）
+	glossaryEditIsNew     bool            // 保留字段（兼容旧初始化代码，不再实际使用）
+	glossaryEditKeyInput  textinput.Model // 保留字段（兼容旧初始化代码，不再实际使用）
+	glossaryEditValInput  textinput.Model // 保留字段（兼容旧初始化代码，不再实际使用）
+	glossaryEditFocusKey  bool            // 保留字段（兼容旧初始化代码，不再实际使用）
+	glossaryConfirmDelete bool            // 是否正在二次确认删除
+
+	// ── 搜索状态 ──
+	glossarySearchActive bool            // 是否处于搜索输入模式
+	glossarySearchInput  textinput.Model // 搜索输入框
+	glossarySearchQuery  string          // 当前搜索词（空=不过滤）
 }
 
 // New 创建并初始化 TUI Model。
@@ -260,6 +293,20 @@ func New(cfg *config.Config, cfgPath string) Model {
 	glossaryVP := viewport.New(80, 20)
 	glossaryVP.SetContent(styles.DimStyle.Render("（选择一个词汇本文件后按 Enter 查看术语）"))
 
+	// 初始化术语编辑输入框（保留兼容旧代码，不再实际使用）
+	keyInput := textinput.New()
+	keyInput.Placeholder = "原文（英文）"
+	keyInput.Width = 40
+
+	valInput := textinput.New()
+	valInput.Placeholder = "译文（中文）"
+	valInput.Width = 40
+
+	// 初始化搜索输入框
+	searchInput := textinput.New()
+	searchInput.Placeholder = "搜索…"
+	searchInput.Width = 30
+
 	// 初始化提示词多行编辑器
 	ta := textarea.New()
 	ta.Placeholder = "在此输入提示词模板，可使用 {{.TargetLang}} 变量..."
@@ -269,17 +316,20 @@ func New(cfg *config.Config, cfgPath string) Model {
 	ta.ShowLineNumbers = false
 
 	return Model{
-		cfg:              cfg,
-		cfgPath:          cfgPath,
-		activeTab:        TabStatus,
-		inputs:           inputs,
-		focusIdx:         0,
-		logViewport:      vp,
-		promptArea:       ta,
-		promptPath:       promptFile,
-		dictFile:         dictFile,
-		glossaryDir:      glossaryDir,
-		glossaryViewport: glossaryVP,
+		cfg:                  cfg,
+		cfgPath:              cfgPath,
+		activeTab:            TabStatus,
+		inputs:               inputs,
+		focusIdx:             0,
+		logViewport:          vp,
+		promptArea:           ta,
+		promptPath:           promptFile,
+		dictFile:             dictFile,
+		glossaryDir:          glossaryDir,
+		glossaryViewport:     glossaryVP,
+		glossaryEditKeyInput: keyInput,
+		glossaryEditValInput: valInput,
+		glossarySearchInput:  searchInput,
 	}
 }
 
@@ -395,9 +445,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.glossaryTerms = msg.terms
 		m.glossaryTermFile = msg.fileName
 		m.glossaryShowTerms = true
+		// 切换词汇本时清空搜索词
+		m.glossarySearchQuery = ""
+		m.glossarySearchInput.Reset()
+		m.glossarySearchActive = false
 		m.glossaryViewport.SetContent(m.renderGlossaryTerms())
 		m.glossaryViewport.GotoTop()
 		return m, nil
+
+	// 术语保存完成
+	case glossarySaveResultMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("✗ 保存术语失败：%v", msg.err)
+			m.statusErr = true
+			return m, clearStatusCmd()
+		}
+		m.statusMsg = fmt.Sprintf("✓ 已保存 %s", msg.fileName)
+		m.statusErr = false
+		// 重新加载术语列表以反映最新内容
+		return m, tea.Batch(clearStatusCmd(), loadGlossaryTermsCmd(msg.filePath, msg.fileName))
+
+	// 外部编辑器关闭
+	case editorFinishedMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("✗ 编辑器退出异常：%v", msg.err)
+			m.statusErr = true
+			return m, clearStatusCmd()
+		}
+		// 编辑器关闭后重新加载术语
+		return m, loadGlossaryTermsCmd(msg.filePath, msg.fileName)
 
 	// 键盘事件：路由到当前视图的处理函数
 	case tea.KeyMsg:
@@ -791,7 +867,7 @@ func (m Model) View() string {
 // renderHeader 渲染顶部标题栏与标签页行。
 func (m Model) renderHeader() string {
 	// 标题行：左侧品牌 + 右侧退出提示
-	brand := styles.TitleStyle.Render("🔄 LspProxy")
+	brand := styles.TitleStyle.Render("LspProxy")
 	quitHint := styles.KeyStyle.Render("[q] 退出")
 	brandW := lipgloss.Width(brand)
 	hintW := lipgloss.Width(quitHint)
@@ -894,10 +970,22 @@ func (m Model) helpText() string {
 	case TabDict:
 		return "↑/↓ 选择  •  Enter 执行  •  R 刷新统计  •  1/2/3/4/6 切换  •  q 退出"
 	case TabGlossary:
-		if m.glossaryShowTerms {
-			return "↑/↓/j/k/PgUp/PgDn 滚动术语列表  •  Esc 返回文件列表  •  R 刷新  •  1/2/3/4/5 切换  •  q 退出"
+		if m.glossaryConfirmDelete {
+			return "Y 确认删除  •  N/Esc 取消"
 		}
-		return "↑/↓ 选择  •  Enter 查看术语  •  R 刷新  •  1/2/3/4/5 切换  •  q 退出"
+		if m.glossaryShowTerms {
+			if m.glossarySearchActive {
+				return "输入搜索词  •  Enter 确认  •  Esc 取消搜索"
+			}
+			if m.glossaryConfirmDelete {
+				return "Y 确认删除  •  N/Esc 取消"
+			}
+			return "↑/↓/j/k 选择  •  E 打开编辑器  •  D/X 删除  •  / 搜索  •  Esc 返回列表  •  R 刷新  •  q 退出"
+		}
+		if m.glossarySearchActive {
+			return "输入搜索词  •  Enter 确认  •  Esc 取消搜索"
+		}
+		return "↑/↓ 选择  •  Enter 查看术语  •  E 打开编辑器  •  / 搜索  •  R 刷新  •  q 退出"
 	}
 	return ""
 }
@@ -1263,25 +1351,126 @@ func (m Model) renderDict() string {
 func (m Model) handleGlossaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
-	// 术语展示模式：viewport 滚动 + Esc 返回
-	if m.glossaryShowTerms {
+	// ── 搜索输入模式（最高优先级拦截）──
+	if m.glossarySearchActive {
 		switch key {
-		case "q":
+		case "ctrl+c":
 			return m, tea.Quit
 		case "esc":
+			// 取消搜索，清空过滤词
+			m.glossarySearchActive = false
+			m.glossarySearchQuery = ""
+			m.glossarySearchInput.Reset()
+			m.glossarySearchInput.Blur()
+			if m.glossaryShowTerms {
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			}
+			return m, nil
+		case "enter":
+			// 确认搜索，保留过滤词，关闭输入框
+			m.glossarySearchQuery = m.glossarySearchInput.Value()
+			m.glossarySearchActive = false
+			m.glossarySearchInput.Blur()
+			if m.glossaryShowTerms {
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			}
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.glossarySearchInput, cmd = m.glossarySearchInput.Update(msg)
+			// 实时更新搜索词和过滤结果
+			m.glossarySearchQuery = m.glossarySearchInput.Value()
+			if m.glossaryShowTerms {
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			}
+			return m, cmd
+		}
+	}
+
+	// ── 删除二次确认模式 ──
+	if m.glossaryConfirmDelete {
+		switch key {
+		case "y", "Y":
+			// 确认删除
+			var filePath, fileName string
+			if m.glossaryCursor < len(m.glossaryFiles) {
+				fi := m.glossaryFiles[m.glossaryCursor]
+				filePath = fi.Path
+				fileName = fi.Name
+			}
+			newTerms := make([]glossary.TermEntry, 0, len(m.glossaryTerms))
+			for i, t := range m.glossaryTerms {
+				if i != m.glossaryTermCursor {
+					newTerms = append(newTerms, t)
+				}
+			}
+			// 调整光标，避免越界
+			if m.glossaryTermCursor >= len(newTerms) && m.glossaryTermCursor > 0 {
+				m.glossaryTermCursor--
+			}
+			m.glossaryConfirmDelete = false
+			m.glossaryTerms = newTerms
+			m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			return m, saveGlossaryTermsCmd(filePath, fileName, newTerms)
+		case "n", "N", "esc":
+			m.glossaryConfirmDelete = false
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// ── 术语展示/编辑模式（glossaryShowTerms = true）──
+	if m.glossaryShowTerms {
+		switch key {
+		case "ctrl+c":
+			return m, tea.Quit
+		case "q":
+			if !m.glossaryEditMode {
+				return m, tea.Quit
+			}
+			return m, nil
+		case "esc":
+			if m.glossaryEditMode {
+				// 退出编辑模式，返回普通展示
+				m.glossaryEditMode = false
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+				return m, nil
+			}
+			// 返回文件列表，同时清空搜索
 			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
+			m.glossarySearchQuery = ""
+			m.glossarySearchInput.Reset()
+			m.glossarySearchActive = false
 			return m, nil
 		case "1":
 			m.activeTab = TabStatus
+			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
 			return m, nil
 		case "2":
+			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
 			return m.switchToConfig()
 		case "3":
+			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
 			return m.switchToLog()
 		case "4":
+			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
 			return m.switchToPrompt()
 		case "5":
+			m.glossaryShowTerms = false
+			m.glossaryEditMode = false
 			return m.switchToDict()
+		case "e", "E":
+			// 直接用外部编辑器打开当前词汇本 TOML 原文
+			if m.glossaryCursor < len(m.glossaryFiles) {
+				fi := m.glossaryFiles[m.glossaryCursor]
+				return m, openEditorCmd(fi.Path, fi.Name)
+			}
+			return m, nil
 		case "r", "R":
 			// 刷新当前查看的术语
 			if m.glossaryCursor < len(m.glossaryFiles) {
@@ -1289,16 +1478,49 @@ func (m Model) handleGlossaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, loadGlossaryTermsCmd(fi.Path, fi.Name)
 			}
 			return m, nil
+		case "/":
+			// 激活搜索输入框
+			m.glossarySearchActive = true
+			m.glossarySearchQuery = ""
+			m.glossarySearchInput.Reset()
+			m.glossarySearchInput.Focus()
+			m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			return m, nil
+		}
+
+		// 术语列表导航与操作（统一处理，无需单独编辑模式）
+		switch key {
+		case "up", "k":
+			if m.glossaryTermCursor > 0 {
+				m.glossaryTermCursor--
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			}
+			return m, nil
+		case "down", "j":
+			if m.glossaryTermCursor < len(m.glossaryTerms)-1 {
+				m.glossaryTermCursor++
+				m.glossaryViewport.SetContent(m.renderGlossaryTerms())
+			}
+			return m, nil
+		case "d", "x", "D", "X":
+			// 删除当前选中的术语（需二次确认）
+			if len(m.glossaryTerms) == 0 {
+				return m, nil
+			}
+			m.glossaryConfirmDelete = true
+			return m, nil
 		default:
-			// j/k、方向键、PgUp/PgDn 由 viewport 处理
+			// 其余按键（PgUp/PgDn/g/G 等）交给 viewport 处理
 			var cmd tea.Cmd
 			m.glossaryViewport, cmd = m.glossaryViewport.Update(msg)
 			return m, cmd
 		}
 	}
 
-	// 文件列表模式
+	// ── 文件列表模式 ──
 	switch key {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "q":
 		return m, tea.Quit
 	case "1":
@@ -1325,15 +1547,33 @@ func (m Model) handleGlossaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.glossaryCursor++
 		}
 		return m, nil
+	case "/":
+		// 激活文件列表搜索
+		m.glossarySearchActive = true
+		m.glossarySearchQuery = ""
+		m.glossarySearchInput.Reset()
+		m.glossarySearchInput.Focus()
+		return m, nil
+	case "e", "E":
+		// 直接用外部编辑器打开选中词汇本的 TOML 原文
+		if m.glossaryCursor < len(m.glossaryFiles) {
+			fi := m.glossaryFiles[m.glossaryCursor]
+			return m, openEditorCmd(fi.Path, fi.Name)
+		}
+		return m, nil
 	case "enter":
 		// 加载选中文件的术语条目
 		if m.glossaryCursor < len(m.glossaryFiles) {
 			fi := m.glossaryFiles[m.glossaryCursor]
+			m.glossaryTermCursor = 0
 			return m, loadGlossaryTermsCmd(fi.Path, fi.Name)
 		}
 		return m, nil
 	case "r", "R":
-		// 刷新文件列表
+		// 刷新文件列表，同时清空搜索
+		m.glossarySearchQuery = ""
+		m.glossarySearchInput.Reset()
+		m.glossarySearchActive = false
 		return m, loadGlossaryFilesCmd(m.glossaryDir)
 	}
 	return m, nil
@@ -1368,11 +1608,30 @@ func (m Model) renderGlossary() string {
 	sb.WriteString(styles.ValueStyle.Render(m.glossaryDir))
 	sb.WriteString("\n")
 
-	// 文件数量
-	sb.WriteString("  ")
-	sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "词汇本数量")))
-	sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d 个", len(m.glossaryFiles))))
-	sb.WriteString("\n")
+	// 搜索过滤：根据 glossarySearchQuery 过滤文件列表
+	displayFiles := m.glossaryFiles
+	if q := strings.ToLower(strings.TrimSpace(m.glossarySearchQuery)); q != "" {
+		var filtered []glossary.FileInfo
+		for _, f := range m.glossaryFiles {
+			if strings.Contains(strings.ToLower(f.Name), q) {
+				filtered = append(filtered, f)
+			}
+		}
+		displayFiles = filtered
+	}
+
+	// 文件数量（显示过滤后数量）
+	if m.glossarySearchQuery != "" {
+		sb.WriteString("  ")
+		sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "词汇本数量")))
+		sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d/%d 个", len(displayFiles), len(m.glossaryFiles))))
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("  ")
+		sb.WriteString(styles.LabelStyle.Render(fmt.Sprintf("  %-16s", "词汇本数量")))
+		sb.WriteString(styles.ValueStyle.Render(fmt.Sprintf("%d 个", len(m.glossaryFiles))))
+		sb.WriteString("\n")
+	}
 
 	// 总术语数
 	totalTerms := 0
@@ -1387,14 +1646,21 @@ func (m Model) renderGlossary() string {
 	// 分隔线
 	sb.WriteString("\n  ")
 	sb.WriteString(styles.SeparatorStyle.Render("── 词汇本文件 "))
+	if m.glossarySearchQuery != "" {
+		sb.WriteString(styles.WarnStyle.Render(fmt.Sprintf("  [过滤: %s]", m.glossarySearchQuery)))
+	}
 	sb.WriteString("\n\n")
 
-	if len(m.glossaryFiles) == 0 {
+	if len(displayFiles) == 0 {
 		sb.WriteString("  ")
-		sb.WriteString(styles.DimStyle.Render("  （目录下暂无词汇本文件）"))
+		if m.glossarySearchQuery != "" {
+			sb.WriteString(styles.DimStyle.Render(fmt.Sprintf("  （未找到包含「%s」的词汇本）", m.glossarySearchQuery)))
+		} else {
+			sb.WriteString(styles.DimStyle.Render("  （目录下暂无词汇本文件）"))
+		}
 		sb.WriteString("\n")
 	} else {
-		for i, f := range m.glossaryFiles {
+		for i, f := range displayFiles {
 			// 文件名（含标注）
 			label := f.Name
 			if f.Name == "_global.toml" {
@@ -1409,7 +1675,8 @@ func (m Model) renderGlossary() string {
 
 			line := fmt.Sprintf("%-36s %s%s", label, termInfo, sizeInfo)
 
-			if i == m.glossaryCursor {
+			// 用过滤后的索引比较光标（光标基于原始列表索引，搜索时简化为顺序索引）
+			if i == m.glossaryCursor || (m.glossarySearchQuery != "" && i == 0 && m.glossaryCursor >= len(displayFiles)) {
 				sb.WriteString("  ")
 				sb.WriteString(styles.FocusedInputStyle.Render("  ▶ " + line))
 			} else {
@@ -1420,27 +1687,130 @@ func (m Model) renderGlossary() string {
 		}
 	}
 
+	// 若搜索激活则显示搜索输入框
+	if m.glossarySearchActive {
+		sb.WriteString("\n  ")
+		sb.WriteString(styles.LabelStyle.Render("/ "))
+		sb.WriteString(m.glossarySearchInput.View())
+		sb.WriteString("\n")
+	}
+
 	sb.WriteString("\n  ")
-	sb.WriteString(styles.DimStyle.Render("  ↑/↓ 选择  •  Enter 查看术语  •  R 刷新"))
+	sb.WriteString(styles.DimStyle.Render("  ↑/↓ 选择  •  Enter 查看术语  •  / 搜索  •  R 刷新"))
 	sb.WriteString("\n")
 
 	return sb.String()
 }
 
-// renderGlossaryTermView 渲染术语展示视图（viewport 模式）。
+// renderGlossaryTermView 渲染术语展示视图（viewport 模式），含编辑模式 UI。
 func (m Model) renderGlossaryTermView() string {
-	termCount := styles.DimStyle.Render(fmt.Sprintf("（共 %d 条术语）", len(m.glossaryTerms)))
+	searchLabel := ""
+	if m.glossarySearchQuery != "" && !m.glossarySearchActive {
+		searchLabel = "  " + styles.WarnStyle.Render(fmt.Sprintf("[过滤: %s]", m.glossarySearchQuery))
+	}
+
+	totalCount := len(m.glossaryTerms)
+	// 计算过滤后的术语数量
+	filterCount := totalCount
+	if q := strings.ToLower(strings.TrimSpace(m.glossarySearchQuery)); q != "" {
+		filterCount = 0
+		for _, t := range m.glossaryTerms {
+			if strings.Contains(strings.ToLower(t.Key), q) || strings.Contains(strings.ToLower(t.Value), q) {
+				filterCount++
+			}
+		}
+	}
+
+	countStr := fmt.Sprintf("（共 %d 条术语）", totalCount)
+	if filterCount != totalCount {
+		countStr = fmt.Sprintf("（%d/%d 条匹配）", filterCount, totalCount)
+	}
+
+	termCount := styles.DimStyle.Render(countStr)
 	fileName := styles.ValueStyle.Render(m.glossaryTermFile)
 	header := "  " + styles.TitleStyle.Render("术语词汇本") +
 		"  " + fileName +
-		"  " + termCount + "\n\n"
+		"  " + termCount + searchLabel + "\n\n"
 
-	return header + m.glossaryViewport.View()
+	// 搜索输入框（搜索激活时显示）
+	var searchBar string
+	if m.glossarySearchActive {
+		searchBar = "  " + styles.LabelStyle.Render("/ ") + m.glossarySearchInput.View() + "\n\n"
+	}
+
+	body := m.glossaryViewport.View()
+
+	// 删除确认提示
+	if m.glossaryConfirmDelete && m.glossaryTermCursor < len(m.glossaryTerms) {
+		t := m.glossaryTerms[m.glossaryTermCursor]
+		confirm := "\n  " + styles.ErrorStyle.Render(
+			fmt.Sprintf("确认删除「%s」？  [Y] 确认  [N/Esc] 取消", t.Key),
+		)
+		return header + searchBar + body + confirm
+	}
+
+	return header + searchBar + body
+}
+
+// renderGlossaryEditBox 渲染术语编辑输入框（保留供参考，目前已改为外部编辑器模式）。
+func (m Model) renderGlossaryEditBox() string {
+	title := "新增术语"
+	if !m.glossaryEditIsNew {
+		title = "编辑术语"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n  ")
+	sb.WriteString(styles.TitleStyle.Render("── " + title + " ────────────────────────"))
+	sb.WriteString("\n\n")
+
+	// 原文输入框
+	keyLabel := styles.LabelStyle.Render(fmt.Sprintf("  %-10s", "原文"))
+	if m.glossaryEditFocusKey {
+		keyLabel = styles.FocusedInputStyle.Render(fmt.Sprintf("▶ %-10s", "原文"))
+	}
+	sb.WriteString("  ")
+	sb.WriteString(keyLabel)
+	sb.WriteString(m.glossaryEditKeyInput.View())
+	sb.WriteString("\n")
+
+	// 译文输入框
+	valLabel := styles.LabelStyle.Render(fmt.Sprintf("  %-10s", "译文"))
+	if !m.glossaryEditFocusKey {
+		valLabel = styles.FocusedInputStyle.Render(fmt.Sprintf("▶ %-10s", "译文"))
+	}
+	sb.WriteString("  ")
+	sb.WriteString(valLabel)
+	sb.WriteString(m.glossaryEditValInput.View())
+	sb.WriteString("\n\n")
+
+	return sb.String()
 }
 
 // renderGlossaryTerms 将术语条目格式化为 viewport 可显示的文本内容。
+// 编辑模式下高亮当前光标行；搜索模式下过滤并高亮匹配词。
 func (m Model) renderGlossaryTerms() string {
-	if len(m.glossaryTerms) == 0 {
+	// 构建过滤后的术语列表
+	terms := m.glossaryTerms
+	query := strings.ToLower(strings.TrimSpace(m.glossarySearchQuery))
+	if query != "" {
+		filtered := make([]glossary.TermEntry, 0)
+		for _, t := range m.glossaryTerms {
+			if strings.Contains(strings.ToLower(t.Key), query) ||
+				strings.Contains(strings.ToLower(t.Value), query) {
+				filtered = append(filtered, t)
+			}
+		}
+		terms = filtered
+	}
+
+	if len(terms) == 0 {
+		if query != "" {
+			return styles.DimStyle.Render(fmt.Sprintf("  （未找到包含「%s」的术语）", query))
+		}
+		if m.glossaryEditMode {
+			return styles.DimStyle.Render("  （此词汇本暂无术语条目，按 Enter/i 打开编辑器添加）")
+		}
 		return styles.DimStyle.Render("  （此词汇本暂无术语条目）")
 	}
 
@@ -1448,7 +1818,7 @@ func (m Model) renderGlossaryTerms() string {
 
 	// 计算 key 列的最大显示宽度（用于对齐）
 	maxKeyW := 0
-	for _, t := range m.glossaryTerms {
+	for _, t := range terms {
 		if w := lipgloss.Width(t.Key); w > maxKeyW {
 			maxKeyW = w
 		}
@@ -1458,24 +1828,45 @@ func (m Model) renderGlossaryTerms() string {
 		maxKeyW = 40
 	}
 
-	for i, t := range m.glossaryTerms {
+	for i, t := range terms {
 		// 行号（右对齐）
 		num := styles.DimStyle.Render(fmt.Sprintf("  %4d. ", i+1))
-		// key（左对齐，固定宽度）
-		key := styles.LabelStyle.Render(fmt.Sprintf("%-*s", maxKeyW, t.Key))
-		// 分隔符
-		sep := styles.SeparatorStyle.Render(" → ")
-		// value
-		val := styles.ValueStyle.Render(t.Value)
+		key := fmt.Sprintf("%-*s", maxKeyW, t.Key)
+		sep := " → "
+		val := t.Value
 
-		sb.WriteString(num)
-		sb.WriteString(key)
-		sb.WriteString(sep)
-		sb.WriteString(val)
+		// 编辑模式且无搜索时高亮光标行
+		if query == "" && i == m.glossaryTermCursor {
+			line := styles.FocusedInputStyle.Render("▶ " + key + sep + val)
+			sb.WriteString(num)
+			sb.WriteString(line)
+		} else if query != "" {
+			// 搜索结果高亮匹配词
+			sb.WriteString(num)
+			sb.WriteString(styles.LabelStyle.Render(highlightMatch(key, query)))
+			sb.WriteString(styles.SeparatorStyle.Render(sep))
+			sb.WriteString(styles.ValueStyle.Render(highlightMatch(val, query)))
+		} else {
+			sb.WriteString(num)
+			sb.WriteString(styles.LabelStyle.Render(key))
+			sb.WriteString(styles.SeparatorStyle.Render(sep))
+			sb.WriteString(styles.ValueStyle.Render(val))
+		}
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
+}
+
+// highlightMatch 在文本中高亮显示匹配的搜索词（大小写不敏感）。
+func highlightMatch(text, query string) string {
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, query)
+	if idx < 0 {
+		return text
+	}
+	highlight := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
+	return text[:idx] + highlight.Render(text[idx:idx+len(query)]) + text[idx+len(query):]
 }
 
 // ────────────────────────────────────────────────────────────
@@ -1684,6 +2075,59 @@ func loadGlossaryTermsCmd(filePath, fileName string) tea.Cmd {
 			err:      err,
 		}
 	}
+}
+
+// saveGlossaryTermsCmd 异步保存术语条目到词汇本文件。
+func saveGlossaryTermsCmd(filePath, fileName string, terms []glossary.TermEntry) tea.Cmd {
+	return func() tea.Msg {
+		err := glossary.SaveTermsToFile(filePath, terms)
+		return glossarySaveResultMsg{
+			filePath: filePath,
+			fileName: fileName,
+			err:      err,
+		}
+	}
+}
+
+// openEditorCmd 挂起 TUI，用外部编辑器打开指定文件，编辑器退出后恢复 TUI。
+//
+// 平台策略：
+//   - Windows：优先 %EDITOR%，其次 %VISUAL%，最后用 cmd /c start 调用系统默认关联程序
+//   - macOS / Linux：优先 $EDITOR，其次 $VISUAL，最后回退到 vim（终端阻塞式）
+func openEditorCmd(filePath, fileName string) tea.Cmd {
+	editor, args := resolveEditor(filePath)
+	c := exec.Command(editor, args...)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{filePath: filePath, fileName: fileName, err: err}
+	})
+}
+
+// resolveEditor 根据当前操作系统和环境变量，返回编辑器命令及参数列表。
+//
+// 查找顺序：
+//  1. $EDITOR / %EDITOR%（用户显式指定，跨平台优先）
+//  2. $VISUAL / %VISUAL%（次选）
+//  3. 平台默认回退：
+//     - Windows → cmd /c start "" "<filePath>"（调用系统默认关联程序，如记事本）
+//     - macOS   → vim（随系统自带）
+//     - Linux   → vim（通常已安装）
+func resolveEditor(filePath string) (string, []string) {
+	// 优先尊重用户显式配置的编辑器（跨平台通用）
+	if e := os.Getenv("EDITOR"); e != "" {
+		return e, []string{filePath}
+	}
+	if e := os.Getenv("VISUAL"); e != "" {
+		return e, []string{filePath}
+	}
+
+	// 平台默认回退
+	if runtime.GOOS == "windows" {
+		// cmd /c start "" "文件路径"
+		// 第一个空字符串是窗口标题，必须提供，否则 start 会把文件路径当标题
+		return "cmd", []string{"/c", "start", "", filePath}
+	}
+	// macOS 和 Linux 统一回退到 vim
+	return "vim", []string{filePath}
 }
 
 // ────────────────────────────────────────────────────────────

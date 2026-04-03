@@ -18,8 +18,8 @@ const features = [
   },
   {
     num: '02',
-    title: '三级缓存',
-    desc: '内存 LRU → 磁盘 JSON 词典 → 在线 API。已翻译内容毫秒级响应。',
+    title: '四级缓存',
+    desc: '词汇本 → 内存 LRU → 磁盘 JSON 词典 → 在线 API。已翻译内容毫秒级响应。',
     extra: '',
     extraType: 'cache',
   },
@@ -47,16 +47,16 @@ const features = [
   {
     num: '06',
     title: 'TUI 管理界面',
-    desc: '内置 Bubble Tea TUI，实时查看翻译日志、管理配置，无需重启。',
+    desc: '内置 Bubble Tea TUI，独立运行，管理配置、日志、提示词、词典与词汇本。',
     extra: '$ LspProxy --tui',
     extraType: 'text',
   },
 ];
 
 const configFeatures = [
-  { key: 'engine', val: 'openai / deepseek / google / ollama' },
-  { key: 'timeout', val: '50ms 快速路径 + 600ms 等待窗口' },
-  { key: 'cache', val: '内存 LRU + 磁盘 JSON 词典' },
+  { key: 'translate.engine', val: 'google（默认）| openai（兼容 DeepSeek/Qwen/Ollama）' },
+  { key: 'proxy.translation_timeout', val: '600ms 等待窗口（内置 50ms 快速路径）' },
+  { key: 'proxy.cache_size', val: '内存 LRU 上限（MB）+ 磁盘 JSON 词典' },
   { key: 'log', val: '日志仅写文件，不污染 LSP 帧' },
 ];
 
@@ -77,8 +77,8 @@ const archSteps = [
   },
   {
     step: '2',
-    title: '三级缓存查询',
-    desc: '依次查询：① 内存 LRU（微秒级） ② 磁盘 JSON 词典（毫秒级） ③ 在线翻译 API（网络请求）。',
+    title: '四级缓存查询',
+    desc: '依次查询：① 词汇本（零延迟）② 内存 LRU（微秒级）③ 磁盘 JSON 词典（毫秒级）④ 在线翻译 API（网络请求）。',
     color: 'text-green-400',
   },
   {
@@ -109,24 +109,21 @@ const heroCodeHtml = `<span class="syntax-comment">-- Neovim 配置示例</span>
 
 const configCodeHtml = `<span class="syntax-comment"># LspProxy 配置文件</span>
 
-<span class="syntax-var">engine</span>: <span class="syntax-string">deepseek</span>        <span class="syntax-comment"># 翻译引擎</span>
+<span class="syntax-var">translate</span>:
+  <span class="syntax-var">engine</span>: <span class="syntax-string">openai</span>          <span class="syntax-comment"># google | openai</span>
+  <span class="syntax-var">openai</span>:
+    <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-...&quot;</span>
+    <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>
+    <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>
 
-<span class="syntax-var">openai</span>:
-  <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-...&quot;</span>
-  <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>
-  <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>
-
-<span class="syntax-var">cache</span>:
-  <span class="syntax-var">memory_limit</span>: <span class="syntax-num">52428800</span>  <span class="syntax-comment"># 50MB</span>
-  <span class="syntax-var">dict_path</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/dict.json&quot;</span>
-
-<span class="syntax-var">timeout</span>:
-  <span class="syntax-var">fast_path</span>: <span class="syntax-string">&quot;50ms&quot;</span>
-  <span class="syntax-var">wait_window</span>: <span class="syntax-string">&quot;600ms&quot;</span>
+<span class="syntax-var">proxy</span>:
+  <span class="syntax-var">cache_size</span>: <span class="syntax-num">30</span>          <span class="syntax-comment"># 内存上限（MB），默认 30</span>
+  <span class="syntax-var">dict_file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/dict.json&quot;</span>
+  <span class="syntax-var">translation_timeout</span>: <span class="syntax-num">600</span>  <span class="syntax-comment"># 毫秒，0 = 无限等待</span>
 
 <span class="syntax-var">log</span>:
   <span class="syntax-var">level</span>: <span class="syntax-string">&quot;info&quot;</span>
-  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/proxy.log&quot;</span>`;
+  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.local/share/lsp-proxy/proxy.log&quot;</span>`;
 
 const nvimCodeHtml = `<span class="syntax-keyword">require</span>(<span class="syntax-string">'lspconfig'</span>).<span class="syntax-var">rust_analyzer</span>.<span class="syntax-func">setup</span>({
   <span class="syntax-var">cmd</span> = { <span class="syntax-string">&quot;LspProxy&quot;</span>, <span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;rust-analyzer&quot;</span> },
@@ -267,7 +264,9 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
                 </div>
               )}
               {f.extraType === 'cache' && (
-                <div class="mt-4 flex gap-1 items-center">
+                <div class="mt-4 flex gap-1 items-center flex-wrap">
+                  <span class="tag" style="color: var(--yellow); border-color: rgba(234, 179, 8, 0.2);">词汇本</span>
+                  <span class="text-xs" style="color: var(--text-dim);">→</span>
                   <span class="tag" style="color: var(--green); border-color: rgba(34, 197, 94, 0.2);">内存</span>
                   <span class="text-xs" style="color: var(--text-dim);">→</span>
                   <span class="tag" style="color: var(--blue); border-color: rgba(59, 130, 246, 0.2);">磁盘</span>
@@ -304,7 +303,7 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
               YAML 配置，<br />开箱即用
             </h2>
             <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
-              单一配置文件控制所有行为：翻译引擎、缓存策略、超时设定、日志级别。修改立即生效，无需重启编辑器。
+              单一配置文件控制所有行为：翻译引擎、缓存策略、超时设定、日志级别。可通过 TUI 模式（--tui）可视化管理。
             </p>
             <div class="space-y-3">
               {configFeatures.map(item => (
@@ -324,7 +323,7 @@ const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
               <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
               <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
               <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
-              <span class="ml-2 text-xs font-mono" style="color: var(--text-dim);">~/.config/LspProxy/config.yaml</span>
+              <span class="ml-2 text-xs font-mono" style="color: var(--text-dim);">~/.config/lsp-proxy/config.yaml</span>
             </div>
             <pre class="p-5 text-xs leading-relaxed overflow-x-auto"><code set:html={configCodeHtml} /></pre>
           </div>

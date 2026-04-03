@@ -26,6 +26,7 @@
 package glossary
 
 import (
+	"bufio"
 	"fmt"
 	"log/slog"
 	"os"
@@ -310,6 +311,106 @@ func (g *Glossary) LoadTerms(filePath string) ([]TermEntry, error) {
 	})
 
 	return entries, nil
+}
+
+// SaveTerms 将术语条目列表写回指定词汇本文件。
+//
+// 写入策略（保护用户注释 + 兼容 builtin 增量合并）：
+//  1. 读取文件原始内容，提取开头的注释行（# 开头的行，直到遇到 [terms] 或非注释行）
+//  2. 重新生成 [terms] 节，写入所有传入的术语条目（按 key 字母序）
+//  3. 写回磁盘，覆盖原文件
+//
+// 这样 builtin 的 mergeIntoFile 逻辑可以正确识别：
+//   - 用户文件中有 → 不追加（保护用户编辑）
+//   - 用户文件中没有但 manifest 有 → 用户主动删除，不追加
+func (g *Glossary) SaveTerms(filePath string, terms []TermEntry) error {
+	// 读取原文件，提取注释头
+	existingData, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("读取词汇本失败 [%s]: %w", filePath, err)
+	}
+
+	var headerLines []string
+	if len(existingData) > 0 {
+		scanner := bufio.NewScanner(strings.NewReader(string(existingData)))
+		for scanner.Scan() {
+			line := scanner.Text()
+			trimmed := strings.TrimSpace(line)
+			// 收集注释行，直到遇到 [terms] 节（停止）或非注释/非空行
+			if trimmed == "[terms]" {
+				break
+			}
+			if strings.HasPrefix(trimmed, "#") || trimmed == "" {
+				headerLines = append(headerLines, line)
+			} else {
+				// 遇到非注释非空行（不应该在 [terms] 之前出现）停止
+				break
+			}
+		}
+	}
+
+	// 去除末尾空行，保留至少一个空行分隔
+	for len(headerLines) > 0 && strings.TrimSpace(headerLines[len(headerLines)-1]) == "" {
+		headerLines = headerLines[:len(headerLines)-1]
+	}
+
+	// 构建新文件内容
+	var sb strings.Builder
+	for _, line := range headerLines {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	if len(headerLines) > 0 {
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("[terms]\n")
+
+	// 按 key 字母序写入术语
+	sorted := make([]TermEntry, len(terms))
+	copy(sorted, terms)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Key < sorted[j].Key
+	})
+
+	for _, t := range sorted {
+		sb.WriteString(fmt.Sprintf("%s = %s\n", tomlQuoteEntry(t.Key), tomlQuoteEntry(t.Value)))
+	}
+
+	if err := os.WriteFile(filePath, []byte(sb.String()), 0o644); err != nil {
+		return fmt.Errorf("写入词汇本失败 [%s]: %w", filePath, err)
+	}
+
+	return nil
+}
+
+// tomlQuoteEntry 对字符串进行 TOML 基本字符串转义，返回带双引号的格式。
+func tomlQuoteEntry(s string) string {
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '"':
+			sb.WriteString(`\"`)
+		case '\\':
+			sb.WriteString(`\\`)
+		case '\n':
+			sb.WriteString(`\n`)
+		case '\r':
+			sb.WriteString(`\r`)
+		case '\t':
+			sb.WriteString(`\t`)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String()
+}
+
+// SaveTermsToFile 是独立于 Glossary 实例的文件写入函数，供 TUI 异步命令使用。
+func SaveTermsToFile(filePath string, terms []TermEntry) error {
+	g := &Glossary{} // 空实例，仅用于调用 SaveTerms
+	return g.SaveTerms(filePath, terms)
 }
 
 // ─────────────────────────────────────────────
