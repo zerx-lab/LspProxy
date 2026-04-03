@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"LspProxy/internal/config"
 	"LspProxy/tui/styles"
@@ -33,7 +34,7 @@ const (
 )
 
 // numConfigInputs 配置表单的字段总数
-const numConfigInputs = 9
+const numConfigInputs = 10
 
 // 配置表单字段索引常量（与 configLabels / configGroups 对应）
 const (
@@ -43,6 +44,7 @@ const (
 	fieldModel                     // OpenAI 模型名
 	fieldTargetLang                // 目标翻译语言
 	fieldCacheSize                 // LRU 缓存大小
+	fieldDictMaxEntries            // 磁盘词典最大条目数
 	fieldTranslationTimeout        // 翻译等待超时（ms），0 表示无限等待
 	fieldLogLevel                  // 日志级别
 	fieldLogFile                   // 日志文件路径
@@ -56,6 +58,7 @@ var configLabels = [numConfigInputs]string{
 	"OpenAI 模型",
 	"目标语言         [ zh-CN | ja | ko … ]",
 	"内存缓存上限     [ MB，默认 30 ]",
+	"磁盘词典上限     [ 条目数，0 = 不限，默认 100000 ]",
 	"翻译等待超时     [ ms，0 = 无限等待，默认 600 ]",
 	"日志级别         [ debug | info | warn | error ]",
 	"日志文件路径",
@@ -69,6 +72,7 @@ var configPlaceholders = [numConfigInputs]string{
 	"gpt-4o-mini",
 	"zh-CN",
 	"30",
+	"100000",
 	"600",
 	"info",
 	"~/.local/share/lsp-proxy/proxy.log",
@@ -103,7 +107,8 @@ type Model struct {
 
 	// ── 日志视图 ──
 	logViewport viewport.Model
-	logLines    []string // 最近一次从日志文件读取到的行
+	logLines    []string // 最近一次从日志文件读取到的行（原始行，未经 wrap 处理）
+	logWrap     bool     // true = 超长行换行显示；false = 横向滚动（默认）
 
 	// ── 配置表单 ──
 	inputs   []textinput.Model // 各字段的 textinput 组件
@@ -124,6 +129,7 @@ func New(cfg *config.Config, cfgPath string) Model {
 		cfg.Translate.OpenAI.Model,
 		cfg.Proxy.TargetLang,
 		strconv.Itoa(cfg.Proxy.CacheSize),
+		strconv.Itoa(cfg.Proxy.DictMaxEntries),
 		strconv.Itoa(cfg.Proxy.TranslationTimeout),
 		cfg.Log.Level,
 		cfg.Log.File,
@@ -144,7 +150,9 @@ func New(cfg *config.Config, cfgPath string) Model {
 	}
 
 	// 初始化 viewport（尺寸会在 WindowSizeMsg 中更新）
+	// 启用横向滚动（步长 4 列），避免长日志行被截断；左右方向键及鼠标横向滚轮均可触发
 	vp := viewport.New(80, 20)
+	vp.SetHorizontalStep(4)
 	vp.SetContent(styles.DimStyle.Render("（切换到「日志」标签页以加载日志）"))
 
 	return Model{
@@ -181,6 +189,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.logViewport.Width = msg.Width
 		m.logViewport.Height = vpH
+		// 宽度变化后，若处于换行模式需按新宽度重新 wrap 内容
+		if len(m.logLines) > 0 {
+			m.setLogViewportContent(false)
+		}
 		return m, nil
 
 	// 定时器触发：刷新日志文件内容，并安排下一次定时
@@ -190,8 +202,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// 日志内容已读取完毕：更新 viewport
 	case logLoadedMsg:
 		m.logLines = []string(msg)
-		m.logViewport.SetContent(strings.Join(m.logLines, "\n"))
-		m.logViewport.GotoBottom()
+		m.setLogViewportContent(true)
 		return m, nil
 
 	// 清除底部状态提示
@@ -303,6 +314,22 @@ func (m Model) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G":
 		m.logViewport.GotoBottom()
 		return m, nil
+	case "D":
+		// 清空日志文件，并立即刷新视图
+		return m, clearLogCmd(m.cfg.Log.File)
+	case "W":
+		// 切换换行/横向滚动模式
+		m.logWrap = !m.logWrap
+		if m.logWrap {
+			// 进入换行模式：禁用横向滚动，重绘内容
+			m.logViewport.SetHorizontalStep(0)
+			m.logViewport.SetXOffset(0)
+		} else {
+			// 恢复横向滚动模式
+			m.logViewport.SetHorizontalStep(4)
+		}
+		m.setLogViewportContent(false)
+		return m, nil
 	default:
 		// j/k、方向键、Page Up/Down 由 viewport 内部处理
 		var cmd tea.Cmd
@@ -363,6 +390,10 @@ func (m Model) doSaveConfig() (tea.Model, tea.Cmd) {
 
 	if n, err := strconv.Atoi(strings.TrimSpace(m.inputs[fieldCacheSize].Value())); err == nil && n > 0 {
 		m.cfg.Proxy.CacheSize = n
+	}
+
+	if n, err := strconv.Atoi(strings.TrimSpace(m.inputs[fieldDictMaxEntries].Value())); err == nil && n >= 0 {
+		m.cfg.Proxy.DictMaxEntries = n
 	}
 
 	if n, err := strconv.Atoi(strings.TrimSpace(m.inputs[fieldTranslationTimeout].Value())); err == nil && n >= 0 {
@@ -465,7 +496,12 @@ func (m Model) renderTabs() string {
 // renderFooter 渲染底部帮助栏，以及操作反馈消息（若有）。
 func (m Model) renderFooter() string {
 	sep := styles.SeparatorStyle.Render(strings.Repeat("─", m.width))
-	help := "  " + styles.KeyStyle.Render(m.helpText())
+	// 帮助文本超出终端宽度时自动折行（留 2 列缩进余量）
+	helpContent := m.helpText()
+	if m.width > 4 {
+		helpContent = ansi.Wrap(helpContent, m.width-2, "")
+	}
+	help := "  " + styles.KeyStyle.Render(helpContent)
 
 	lines := []string{sep, help}
 
@@ -490,7 +526,11 @@ func (m Model) helpText() string {
 	case TabConfig:
 		return "Tab/↓ 下一字段  •  ↑ 上一字段  •  Enter 确认  •  Ctrl+S 保存  •  Esc 返回"
 	case TabLog:
-		return "j/k/↑/↓/PgUp/PgDn 滚动  •  g 顶部  •  G 底部  •  1/2/3 切换  •  q 退出  （鼠标可直接拖选文本）"
+		wrapHint := "W 开启换行"
+		if m.logWrap {
+			wrapHint = "W 关闭换行"
+		}
+		return "↑/↓/j/k/PgUp/PgDn 上下滚动  •  ←/→ 左右滚动  •  g 顶部  •  G 底部  •  " + wrapHint + "  •  D 清空日志  •  1/2/3 切换  •  q 退出"
 	}
 	return ""
 }
@@ -532,6 +572,13 @@ func (m Model) renderStatus() string {
 	sb.WriteString(kv("目标语言", m.cfg.Proxy.TargetLang))
 	sb.WriteString("\n")
 	sb.WriteString(kv("内存缓存上限", strconv.Itoa(m.cfg.Proxy.CacheSize)+" MB"))
+	sb.WriteString("\n")
+
+	dictMaxDisplay := strconv.Itoa(m.cfg.Proxy.DictMaxEntries) + " 条"
+	if m.cfg.Proxy.DictMaxEntries == 0 {
+		dictMaxDisplay = "不限制"
+	}
+	sb.WriteString(kv("磁盘词典上限", dictMaxDisplay))
 	sb.WriteString("\n")
 
 	timeoutDisplay := strconv.Itoa(m.cfg.Proxy.TranslationTimeout) + " ms"
@@ -593,7 +640,7 @@ func (m Model) renderConfig() string {
 		fields []int
 	}{
 		{"翻译引擎", []int{fieldEngine, fieldBaseURL, fieldAPIKey, fieldModel}},
-		{"代理设置", []int{fieldTargetLang, fieldCacheSize, fieldTranslationTimeout}},
+		{"代理设置", []int{fieldTargetLang, fieldCacheSize, fieldDictMaxEntries, fieldTranslationTimeout}},
 		{"日志设置", []int{fieldLogLevel, fieldLogFile}},
 	}
 
@@ -625,11 +672,35 @@ func (m Model) renderConfig() string {
 
 // ── 日志视图 ──────────────────────────────────────────────────
 
+// setLogViewportContent 将 m.logLines 写入 viewport。
+// 换行模式下对每行调用 ansi.Wrap 按终端宽度折行；横向滚动模式下原样写入。
+// gotoBottom 为 true 时写入后自动滚到底部（新内容到达时使用）。
+func (m *Model) setLogViewportContent(gotoBottom bool) {
+	if m.logWrap && m.logViewport.Width > 0 {
+		// 换行模式：每行独立 wrap 后重新拼接
+		wrapped := make([]string, 0, len(m.logLines))
+		for _, line := range m.logLines {
+			wrapped = append(wrapped, ansi.Wrap(line, m.logViewport.Width, ""))
+		}
+		m.logViewport.SetContent(strings.Join(wrapped, "\n"))
+	} else {
+		m.logViewport.SetContent(strings.Join(m.logLines, "\n"))
+	}
+	if gotoBottom {
+		m.logViewport.GotoBottom()
+	}
+}
+
 // renderLog 渲染日志视图（使用 viewport 支持上下滚动）。
 func (m Model) renderLog() string {
+	wrapIndicator := ""
+	if m.logWrap {
+		wrapIndicator = "  " + styles.DimStyle.Render("[换行]")
+	}
 	lineCount := styles.DimStyle.Render(fmt.Sprintf("（共 %d 行）", len(m.logLines)))
 	filePath := styles.DimStyle.Render(m.cfg.Log.File)
 	header := "  " + styles.TitleStyle.Render("日志") +
+		wrapIndicator +
 		"  " + lineCount +
 		"  " + filePath + "\n\n"
 
@@ -652,6 +723,21 @@ func clearStatusCmd() tea.Cmd {
 	return tea.Tick(3*time.Second, func(_ time.Time) tea.Msg {
 		return clearStatusMsg{}
 	})
+}
+
+// clearLogCmd 返回异步清空日志文件的命令，清空后触发一次重新加载。
+func clearLogCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		if err := os.Truncate(path, 0); err != nil && !os.IsNotExist(err) {
+			return logLoadedMsg([]string{
+				styles.ErrorStyle.Render("清空日志文件失败：" + err.Error()),
+			})
+		}
+		// 清空成功，返回空内容提示
+		return logLoadedMsg([]string{
+			styles.DimStyle.Render("（日志已清空）"),
+		})
+	}
 }
 
 // loadLogCmd 返回异步读取日志文件的命令。

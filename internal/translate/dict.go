@@ -1,6 +1,7 @@
 package translate
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"os"
@@ -8,34 +9,47 @@ import (
 	"sync"
 )
 
-// diskDictData 是 JSON 文件中存储的数据结构
-// key = targetLang + "\x00" + text，value = 翻译结果
-type diskDictData = map[string]string
+// diskEntry 是磁盘词典链表节点中存储的条目
+type diskEntry struct {
+	key   string // dictKey(targetLang, text)
+	value string // 翻译结果
+}
 
-// DiskDict 是基于 JSON 文件的持久化翻译词典。
+// DiskDict 是基于 JSON 文件的持久化翻译词典，内置访问顺序 LRU 驱逐。
+//
+// 数据组织：
+//   - items：key → *list.Element，用于 O(1) 查找
+//   - order：双向链表，头部为最近访问，尾部为最久未访问
+//
+// 超出 maxEntries 时驱逐链表尾部（最久未访问）的条目。
 // 启动时将整个词典加载到内存索引，查询时直接走内存，
-// 每次新增翻译后异步写盘（防止频繁 I/O）。
+// 每次变更后异步触发写盘（防止频繁 I/O）。
 type DiskDict struct {
-	path string
+	path       string
+	maxEntries int // 最大条目数，0 表示不限制
 
 	mu         sync.RWMutex
-	data       diskDictData  // 内存索引：key → 翻译值
-	generation uint64        // 数据变更的代数计数器，每次 Put 自增
-	flushedGen uint64        // 已成功写盘的代数
-	writeCh    chan struct{} // 写盘信号
-	stopCh     chan struct{} // 停止信号
-	done       chan struct{} // writeLoop 退出信号
+	items      map[string]*list.Element // key → 链表节点
+	order      *list.List               // 头部=最近访问，尾部=最久未访问
+	generation uint64                   // 数据变更的代数计数器，每次 Put/evict 自增
+	flushedGen uint64                   // 已成功写盘的代数
+	writeCh    chan struct{}            // 写盘信号
+	stopCh     chan struct{}            // 停止信号
+	done       chan struct{}            // writeLoop 退出信号
 }
 
 // NewDiskDict 创建并加载磁盘词典。
 // path 为词典文件路径，文件不存在时自动创建。
-func NewDiskDict(path string) (*DiskDict, error) {
+// maxEntries 为最大条目数，<= 0 时不限制容量。
+func NewDiskDict(path string, maxEntries int) (*DiskDict, error) {
 	d := &DiskDict{
-		path:    path,
-		data:    make(diskDictData),
-		writeCh: make(chan struct{}, 1),
-		stopCh:  make(chan struct{}),
-		done:    make(chan struct{}),
+		path:       path,
+		maxEntries: maxEntries,
+		items:      make(map[string]*list.Element),
+		order:      list.New(),
+		writeCh:    make(chan struct{}, 1),
+		stopCh:     make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 
 	if err := d.load(); err != nil {
@@ -48,43 +62,81 @@ func NewDiskDict(path string) (*DiskDict, error) {
 	return d, nil
 }
 
-// dictKey 生成词典键
+// dictKey 生成词典键，text 经过 [NormalizeKey] 规范化以提高缓存复用率。
 func dictKey(targetLang, text string) string {
-	return targetLang + "\x00" + text
+	return targetLang + "\x00" + NormalizeKey(text)
 }
 
-// Get 从磁盘词典查询翻译结果。未命中返回 ("", false)。
+// Get 从磁盘词典查询翻译结果，命中时将条目移至链表头部（更新访问顺序）。
+// 未命中返回 ("", false)。
 func (d *DiskDict) Get(text, targetLang string) (string, bool) {
-	d.mu.RLock()
-	v, ok := d.data[dictKey(targetLang, text)]
-	d.mu.RUnlock()
-	return v, ok
-}
-
-// Put 将翻译结果写入磁盘词典内存索引，并异步触发写盘。
-func (d *DiskDict) Put(text, targetLang, value string) {
 	key := dictKey(targetLang, text)
 
 	d.mu.Lock()
-	if existing, ok := d.data[key]; ok && existing == value {
+	elem, ok := d.items[key]
+	if !ok {
 		d.mu.Unlock()
-		return // 已存在且相同，无需写盘
+		return "", false
 	}
-	d.data[key] = value
-	d.generation++
+	// 命中：移至链表头部，更新访问顺序
+	d.order.MoveToFront(elem)
+	value := elem.Value.(*diskEntry).value
 	d.mu.Unlock()
 
-	// 非阻塞发送写盘信号（channel 有缓冲，避免重复写盘）
-	select {
-	case d.writeCh <- struct{}{}:
-	default:
+	return value, true
+}
+
+// Put 将翻译结果写入磁盘词典，并异步触发写盘。
+// 若 key 已存在则更新值并移至链表头部；
+// 若超出 maxEntries 则驱逐尾部（最久未访问）条目后再插入。
+func (d *DiskDict) Put(text, targetLang, value string) {
+	key := dictKey(targetLang, text)
+	changed := false
+
+	d.mu.Lock()
+
+	if elem, ok := d.items[key]; ok {
+		entry := elem.Value.(*diskEntry)
+		if entry.value == value {
+			// 值未变化：仅更新访问顺序，不触发写盘
+			d.order.MoveToFront(elem)
+			d.mu.Unlock()
+			return
+		}
+		// 值有变化：更新并移至头部
+		entry.value = value
+		d.order.MoveToFront(elem)
+		d.generation++
+		changed = true
+	} else {
+		// 新条目：超出上限时先驱逐
+		if d.maxEntries > 0 {
+			for d.order.Len() >= d.maxEntries {
+				d.evictLocked()
+			}
+		}
+		entry := &diskEntry{key: key, value: value}
+		elem := d.order.PushFront(entry)
+		d.items[key] = elem
+		d.generation++
+		changed = true
+	}
+
+	d.mu.Unlock()
+
+	if changed {
+		// 非阻塞发送写盘信号（channel 有缓冲，避免重复写盘）
+		select {
+		case d.writeCh <- struct{}{}:
+		default:
+		}
 	}
 }
 
 // Len 返回词典中的条目数
 func (d *DiskDict) Len() int {
 	d.mu.RLock()
-	n := len(d.data)
+	n := len(d.items)
 	d.mu.RUnlock()
 	return n
 }
@@ -97,7 +149,21 @@ func (d *DiskDict) Close() error {
 	return d.flush()
 }
 
-// load 从磁盘加载词典数据
+// evictLocked 驱逐链表尾部（最久未访问）的条目。
+// 调用方必须持有 d.mu 写锁。
+func (d *DiskDict) evictLocked() {
+	tail := d.order.Back()
+	if tail == nil {
+		return
+	}
+	entry := tail.Value.(*diskEntry)
+	delete(d.items, entry.key)
+	d.order.Remove(tail)
+	d.generation++ // 驱逐也是数据变更，需要写盘
+}
+
+// load 从磁盘加载词典数据，并重建内存链表（按 JSON 迭代顺序，作为初始访问顺序）。
+// 若加载后条目数超过 maxEntries，则截断至上限（保留链表靠前的条目）。
 func (d *DiskDict) load() error {
 	// 确保父目录存在
 	dir := filepath.Dir(d.path)
@@ -121,8 +187,22 @@ func (d *DiskDict) load() error {
 	}
 
 	d.mu.Lock()
-	d.data = raw
-	d.mu.Unlock()
+	defer d.mu.Unlock()
+
+	// 重建链表（JSON map 迭代顺序不确定，视为随机初始访问顺序）
+	for k, v := range raw {
+		entry := &diskEntry{key: k, value: v}
+		elem := d.order.PushBack(entry) // PushBack：旧条目视为"较久访问"，新请求会升到头部
+		d.items[k] = elem
+	}
+
+	// 若加载的条目数超过上限，驱逐链表尾部（随机淘汰旧条目）
+	if d.maxEntries > 0 {
+		for d.order.Len() > d.maxEntries {
+			d.evictLocked()
+		}
+	}
+
 	return nil
 }
 
@@ -136,10 +216,11 @@ func (d *DiskDict) flush() error {
 		d.mu.RUnlock()
 		return nil // 没有未写盘的变更
 	}
-	// 复制一份数据，避免长时间持锁
-	snapshot := make(diskDictData, len(d.data))
-	for k, v := range d.data {
-		snapshot[k] = v
+	// 按链表顺序构建快照（头部=最近访问）
+	snapshot := make(map[string]string, d.order.Len())
+	for elem := d.order.Front(); elem != nil; elem = elem.Next() {
+		entry := elem.Value.(*diskEntry)
+		snapshot[entry.key] = entry.value
 	}
 	d.mu.RUnlock()
 
@@ -201,8 +282,9 @@ func NewDictEngine(base Engine, memoryLimit int64, disk *DiskDict) *DictEngine {
 }
 
 // Translate 按 内存 → 磁盘词典 → 在线翻译 的顺序查询。
+// 所有缓存 key 经过 [NormalizeKey] 规范化，使语义等价的文本共享缓存。
 func (d *DictEngine) Translate(ctx context.Context, text, targetLang string) (string, error) {
-	key := cacheKey{text: text, targetLang: targetLang}
+	key := cacheKey{text: NormalizeKey(text), targetLang: targetLang}
 
 	// 1. 查内存 LRU
 	d.mem.mu.Lock()
@@ -214,7 +296,7 @@ func (d *DictEngine) Translate(ctx context.Context, text, targetLang string) (st
 	}
 	d.mem.mu.Unlock()
 
-	// 2. 查磁盘词典
+	// 2. 查磁盘词典（命中时内部已更新访问顺序）
 	if v, ok := d.disk.Get(text, targetLang); ok {
 		// 命中磁盘词典，回填内存缓存
 		d.mem.Put(text, targetLang, v)

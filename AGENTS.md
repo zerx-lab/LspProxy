@@ -91,12 +91,8 @@ go test ./... -cover
 cd website
 
 bun install       # 安装依赖（使用 Bun，不要用 npm/yarn）
-bun run dev       # 启动开发服务器
 bun run build     # 生产构建
-bun run start     # 启动生产服务器
 ```
-
-技术栈：Next.js 15 + Nextra 4 + React 19 + Tailwind CSS 4。
 
 ---
 
@@ -126,7 +122,7 @@ LspProxy/
 ├── tui/
 │   ├── app.go               # Bubble Tea Model/Update/View
 │   └── styles/styles.go     # lipgloss 样式常量
-└── website/                 # Next.js 文档网站
+└── website/                 # 文档网站
 ```
 
 **层级职责（关注点严格分离）：**

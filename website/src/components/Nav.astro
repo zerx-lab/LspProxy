@@ -1,0 +1,58 @@
+---
+import ThemeToggle from './ThemeToggle.astro';
+
+const navLinks = [
+  { href: '/docs', label: 'DOCS' },
+  { href: '/changelog', label: 'CHANGELOG' },
+];
+---
+
+<nav class="fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-md" style="border-color: var(--border); background: color-mix(in srgb, var(--bg) 90%, transparent);">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="flex items-center justify-between h-14">
+      <!-- Logo -->
+      <a href="/" class="flex items-center gap-2 group">
+        <div class="w-6 h-6 rounded-sm flex items-center justify-center" style="background: var(--btn-primary-bg);">
+          <span class="font-mono font-bold text-xs" style="color: var(--btn-primary-fg);">L</span>
+        </div>
+        <span class="font-mono font-semibold text-sm tracking-tight" style="color: var(--text-heading);">LSP-PROXY.</span>
+      </a>
+
+      <!-- Nav links -->
+      <div class="hidden md:flex items-center gap-6">
+        {navLinks.map(link => (
+          <a
+            href={link.href}
+            class="font-mono text-xs tracking-widest transition-colors duration-150"
+            style="color: var(--text-muted);"
+          >
+            {link.label}
+          </a>
+        ))}
+      </div>
+
+      <!-- Actions -->
+      <div class="flex items-center gap-3">
+        <a
+          href="https://github.com/zerx-lab/LspProxy"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="font-mono text-xs tracking-widest transition-colors duration-150 hidden md:block"
+          style="color: var(--text-muted);"
+        >
+          GITHUB
+        </a>
+        <ThemeToggle />
+        <a href="/docs" class="btn-primary text-xs py-1.5 px-3">
+          快速开始
+        </a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<style>
+  nav a:hover {
+    color: var(--text-heading) !important;
+  }
+</style>

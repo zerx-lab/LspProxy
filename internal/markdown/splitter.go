@@ -244,6 +244,11 @@ const placeholderFmt = "$CODE_%d$"
 // placeholderRe 用于还原阶段匹配占位符，宽松处理翻译引擎可能加入的空格
 var placeholderRe = regexp.MustCompile(`\$\s*CODE_\s*(\d+)\s*\$`)
 
+// PlaceholderRe 返回占位符匹配正则表达式，供外部包判断文本是否包含占位符。
+func PlaceholderRe() *regexp.Regexp {
+	return placeholderRe
+}
+
 // Protect 将文本中的所有代码块（围栏代码块和行内代码）替换为编号占位符。
 //
 // 返回：

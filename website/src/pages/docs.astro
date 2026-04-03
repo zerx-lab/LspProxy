@@ -1,0 +1,617 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const sidebarItems = [
+  {
+    section: '开始',
+    items: [
+      { href: '#introduction', label: '简介' },
+      { href: '#installation', label: '安装' },
+      { href: '#quick-start', label: '快速开始' },
+    ]
+  },
+  {
+    section: '配置',
+    items: [
+      { href: '#configuration', label: '配置文件' },
+      { href: '#engines', label: '翻译引擎' },
+      { href: '#cache', label: '缓存策略' },
+    ]
+  },
+  {
+    section: '编辑器',
+    items: [
+      { href: '#neovim', label: 'Neovim' },
+      { href: '#vscode', label: 'VSCode' },
+      { href: '#zed', label: 'Zed' },
+      { href: '#emacs', label: 'Emacs' },
+    ]
+  },
+  {
+    section: '高级',
+    items: [
+      { href: '#tui', label: 'TUI 管理界面' },
+      { href: '#architecture', label: '架构原理' },
+      { href: '#contributing', label: '贡献指南' },
+    ]
+  },
+];
+
+// ── 代码块 HTML 常量（通过 set:html 注入，避免 Astro 将 span 标签当模板节点解析）──
+
+const codeInstall = `<code><span style="color: var(--text-dim);">$</span> go install <span style="color: var(--green);">github.com/zerx-lab/LspProxy@latest</span></code>`;
+
+const codeVerify = `<code><span style="color: var(--text-dim);">$</span> LspProxy --version
+<span style="color: var(--text-muted);">LspProxy v0.1.0</span></code>`;
+
+const codeQuickStart = `<code><span style="color: var(--text-dim);"># 代理 rust-analyzer</span>
+<span style="color: var(--text-dim);">$</span> LspProxy -- <span style="color: var(--text-heading);">rust-analyzer</span>
+
+<span style="color: var(--text-dim);"># 代理 clangd</span>
+<span style="color: var(--text-dim);">$</span> LspProxy -- <span style="color: var(--text-heading);">clangd</span>
+
+<span style="color: var(--text-dim);"># 指定翻译引擎</span>
+<span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">-e openai</span> -- rust-analyzer
+
+<span style="color: var(--text-dim);"># 指定配置文件</span>
+<span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">--config /path/to/config.yaml</span> -- rust-analyzer
+
+<span style="color: var(--text-dim);"># 启动 TUI 管理界面</span>
+<span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">--tui</span></code>`;
+
+const codeConfig = `<code><span class="syntax-comment"># 翻译引擎：google | openai | ollama</span>
+<span class="syntax-var">engine</span>: <span class="syntax-string">google</span>
+
+<span class="syntax-comment"># OpenAI 兼容 API（DeepSeek / Qwen / Ollama）</span>
+<span class="syntax-var">openai</span>:
+  <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-your-api-key&quot;</span>
+  <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>  <span class="syntax-comment"># 可选</span>
+  <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>              <span class="syntax-comment"># 可选</span>
+  <span class="syntax-var">prompt</span>: <span class="syntax-string">&quot;&quot;</span>                          <span class="syntax-comment"># 自定义翻译 prompt</span>
+
+<span class="syntax-comment"># 缓存配置</span>
+<span class="syntax-var">cache</span>:
+  <span class="syntax-var">memory_limit</span>: <span class="syntax-num">52428800</span>  <span class="syntax-comment"># 内存上限（字节），默认 50MB</span>
+  <span class="syntax-var">dict_path</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/dict.json&quot;</span>
+
+<span class="syntax-comment"># 超时配置</span>
+<span class="syntax-var">timeout</span>:
+  <span class="syntax-var">fast_path</span>: <span class="syntax-string">&quot;50ms&quot;</span>    <span class="syntax-comment"># 快速路径超时</span>
+  <span class="syntax-var">wait_window</span>: <span class="syntax-string">&quot;600ms&quot;</span> <span class="syntax-comment"># 等待翻译完成窗口</span>
+
+<span class="syntax-comment"># 日志配置</span>
+<span class="syntax-var">log</span>:
+  <span class="syntax-var">level</span>: <span class="syntax-string">&quot;info&quot;</span>   <span class="syntax-comment"># debug | info | warn | error</span>
+  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/proxy.log&quot;</span></code>`;
+
+const codeEngineGoogle = `<code># 无需额外配置
+engine: google</code>`;
+
+const codeEngineDeepSeek = `<code>engine: openai
+openai:
+  api_key: &quot;sk-your-key&quot;
+  base_url: &quot;https://api.deepseek.com&quot;
+  model: &quot;deepseek-chat&quot;</code>`;
+
+const codeEngineOllama = `<code>engine: ollama
+openai:
+  base_url: &quot;http://localhost:11434/v1&quot;
+  model: &quot;qwen2.5:7b&quot;</code>`;
+
+const codeTui = `<code><span style="color: var(--text-dim);">$</span> LspProxy <span style="color: var(--green);">--tui</span></code>`;
+
+const codeNeovim = `<code><span class="syntax-keyword">local</span> lspconfig = <span class="syntax-keyword">require</span>(<span class="syntax-string">'lspconfig'</span>)
+
+<span class="syntax-comment">-- Rust</span>
+lspconfig.<span class="syntax-var">rust_analyzer</span>.<span class="syntax-func">setup</span>({
+  <span class="syntax-var">cmd</span> = { <span class="syntax-string">&quot;LspProxy&quot;</span>, <span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;rust-analyzer&quot;</span> },
+})
+
+<span class="syntax-comment">-- Go</span>
+lspconfig.<span class="syntax-var">gopls</span>.<span class="syntax-func">setup</span>({
+  <span class="syntax-var">cmd</span> = { <span class="syntax-string">&quot;LspProxy&quot;</span>, <span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;gopls&quot;</span> },
+})
+
+<span class="syntax-comment">-- C/C++</span>
+lspconfig.<span class="syntax-var">clangd</span>.<span class="syntax-func">setup</span>({
+  <span class="syntax-var">cmd</span> = { <span class="syntax-string">&quot;LspProxy&quot;</span>, <span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;clangd&quot;</span> },
+})</code>`;
+
+const codeVscodeScript = `<code>#!/bin/sh
+exec LspProxy -- rust-analyzer &quot;$@&quot;</code>`;
+
+const codeVscodeSettings = `<code>{
+  <span class="syntax-string">&quot;rust-analyzer.server.path&quot;</span>: <span class="syntax-string">&quot;/usr/local/bin/rust-analyzer-proxy.sh&quot;</span>
+}</code>`;
+
+const codeZed = `<code>{
+  <span class="syntax-string">&quot;lsp&quot;</span>: {
+    <span class="syntax-string">&quot;rust-analyzer&quot;</span>: {
+      <span class="syntax-string">&quot;binary&quot;</span>: {
+        <span class="syntax-string">&quot;path&quot;</span>: <span class="syntax-string">&quot;LspProxy&quot;</span>,
+        <span class="syntax-string">&quot;arguments&quot;</span>: [<span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;rust-analyzer&quot;</span>]
+      }
+    }
+  }
+}</code>`;
+
+const codeEmacs = `<code><span class="syntax-comment">;; 使用 lsp-mode</span>
+(<span class="syntax-keyword">setq</span> lsp-rust-analyzer-server-command
+      '(<span class="syntax-string">&quot;LspProxy&quot;</span> <span class="syntax-string">&quot;--&quot;</span> <span class="syntax-string">&quot;rust-analyzer&quot;</span>))
+
+<span class="syntax-comment">;; 使用 eglot</span>
+(<span class="syntax-func">add-to-list</span> 'eglot-server-programs
+  '(rust-mode . (<span class="syntax-string">&quot;LspProxy&quot;</span> <span class="syntax-string">&quot;--&quot;</span> <span class="syntax-string">&quot;rust-analyzer&quot;</span>)))</code>`;
+
+const codeContributing = `<code><span style="color: var(--text-dim);"># 克隆仓库</span>
+git clone https://github.com/zerx-lab/LspProxy
+
+<span style="color: var(--text-dim);"># 构建</span>
+go build -o LspProxy .
+
+<span style="color: var(--text-dim);"># 格式化（提交前必须）</span>
+go fmt ./...
+
+<span style="color: var(--text-dim);"># 静态分析</span>
+go vet ./...</code>`;
+---
+
+<BaseLayout
+  title="文档 — LspProxy"
+  description="LspProxy 完整使用文档：安装、配置、编辑器集成、翻译引擎选择。"
+>
+  <Nav />
+
+  <div class="pt-14 min-h-screen flex">
+    <!-- Sidebar -->
+    <aside class="hidden lg:flex flex-col fixed left-0 top-14 bottom-0 w-60 border-r overflow-y-auto py-6 px-4 z-40" style="border-color: var(--border); background: var(--bg);">
+      <nav class="space-y-6">
+        {sidebarItems.map(group => (
+          <div>
+            <p class="section-label mb-2 px-2" style="color: var(--text-muted);">{group.section}</p>
+            <ul class="space-y-0.5">
+              {group.items.map(item => (
+                <li>
+                  <a
+                    href={item.href}
+                    class="doc-nav-link block px-2 py-1.5 text-xs font-mono rounded transition-colors duration-150"
+                    style="color: var(--text);"
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+
+      <div class="mt-auto pt-6 border-t" style="border-color: var(--border-subtle);">
+        <a
+          href="https://github.com/zerx-lab/LspProxy"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="sidebar-github flex items-center gap-2 px-2 py-1.5 text-xs font-mono transition-colors"
+          style="color: var(--text-muted);"
+        >
+          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0 1 12 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/>
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="flex-1 lg:ml-60 px-4 sm:px-6 lg:px-12 py-12 max-w-4xl mx-auto lg:mx-0">
+
+      <!-- Introduction -->
+      <section id="introduction" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">简介</span>
+        </div>
+        <h1 class="text-3xl font-mono font-bold mb-4" style="color: var(--text-heading);">LspProxy 简介</h1>
+        <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
+          LspProxy 是一个用 Go 编写的 LSP（Language Server Protocol）透明代理，专为中文开发者设计。
+          它以完全透明的方式插入编辑器（VSCode / Neovim / Zed / Emacs）和真实 LSP 进程之间，
+          将 LSP 响应（hover、completion、diagnostics、signatureHelp）中的英文文档实时翻译为中文。
+        </p>
+
+        <div class="p-4 border rounded mb-6" style="border-color: var(--border); background: var(--bg-secondary);">
+          <p class="text-xs font-mono mb-2 section-label" style="color: var(--text);">数据流向</p>
+          <pre class="text-xs font-mono leading-loose" style="color: var(--text-muted);">编辑器 stdin  ──► [forwardClientToLsp] ──► lsp stdin
+编辑器 stdout ◄── [forwardLspToClient] ◄── lsp stdout
+                        ↑ 翻译处理在此</pre>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[
+            { label: '透明代理', desc: '不修改 LSP 协议，仅处理文档字段' },
+            { label: '三级缓存', desc: '内存 → 磁盘 → API，已译内容零延迟' },
+            { label: '多引擎', desc: 'Google / OpenAI / DeepSeek / Ollama' },
+          ].map(item => (
+            <div class="p-3 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+              <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">{item.label}</p>
+              <p class="text-xs font-mono" style="color: var(--text-dim);">{item.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <!-- Installation -->
+      <section id="installation" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">安装</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">安装 LspProxy</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          需要 Go 1.21 或更高版本。使用 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">go install</code> 一键安装：
+        </p>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center justify-between px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">终端</span>
+          </div>
+          <pre class="p-4 text-xs font-mono" set:html={codeInstall}></pre>
+        </div>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          验证安装：
+        </p>
+
+        <div class="code-block mb-6">
+          <pre class="p-4 text-xs font-mono" set:html={codeVerify}></pre>
+        </div>
+
+        <div class="p-4 border rounded" style="background: var(--warn-bg); border-color: var(--warn-border);">
+          <p class="text-xs font-mono mb-1" style="color: var(--warn-text);">注意</p>
+          <p class="text-xs font-mono" style="color: var(--text-muted);">
+            确保 <code style="color: var(--text-heading);">$GOPATH/bin</code> 或 <code style="color: var(--text-heading);">$HOME/go/bin</code> 已加入 PATH 环境变量。
+          </p>
+        </div>
+      </section>
+
+      <!-- Quick Start -->
+      <section id="quick-start" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">快速开始</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">快速开始</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          最简单的启动方式——将 LspProxy 作为 LSP 命令的包装器：
+        </p>
+
+        <div class="code-block mb-6">
+          <pre class="p-4 text-xs font-mono" set:html={codeQuickStart}></pre>
+        </div>
+      </section>
+
+      <!-- Configuration -->
+      <section id="configuration" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">配置</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">配置文件</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          默认配置文件位于 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">~/.config/LspProxy/config.yaml</code>。
+          可通过 <code class="px-1.5 py-0.5 rounded text-xs" style="color: var(--text-heading); background: var(--bg-secondary);">--config</code> 标志指定其他路径。
+        </p>
+
+        <div class="code-block mb-6">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">config.yaml</span>
+          </div>
+          <pre class="p-4 text-xs font-mono leading-relaxed" set:html={codeConfig}></pre>
+        </div>
+      </section>
+
+      <!-- Engines -->
+      <section id="engines" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">翻译引擎</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">翻译引擎</h2>
+
+        <div class="space-y-4">
+
+          <!-- Google -->
+          <div class="border rounded overflow-hidden" style="border-color: var(--border);">
+            <div class="flex items-center gap-3 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+              <span class="tag">google</span>
+              <span class="text-xs font-mono font-medium" style="color: var(--text-heading);">Google 翻译（免费）</span>
+            </div>
+            <div class="p-4">
+              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">使用 Google 免费翻译 API，无需配置，开箱即用。适合对翻译质量要求不高的场景。</p>
+              <div class="code-block">
+                <pre class="p-3 text-xs font-mono" style="color: var(--text);" set:html={codeEngineGoogle}></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- DeepSeek -->
+          <div class="border rounded overflow-hidden" style="border-color: var(--border);">
+            <div class="flex items-center gap-3 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+              <span class="tag">deepseek</span>
+              <span class="text-xs font-mono font-medium" style="color: var(--text-heading);">DeepSeek（推荐）</span>
+            </div>
+            <div class="p-4">
+              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">性价比极高，翻译质量优秀，API 价格极低。推荐中文开发者使用。</p>
+              <div class="code-block">
+                <pre class="p-3 text-xs font-mono" style="color: var(--text);" set:html={codeEngineDeepSeek}></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ollama -->
+          <div class="border rounded overflow-hidden" style="border-color: var(--border);">
+            <div class="flex items-center gap-3 px-4 py-3 border-b" style="background: var(--bg-secondary); border-color: var(--border);">
+              <span class="tag">ollama</span>
+              <span class="text-xs font-mono font-medium" style="color: var(--text-heading);">Ollama（本地）</span>
+            </div>
+            <div class="p-4">
+              <p class="text-xs font-mono leading-relaxed mb-3" style="color: var(--text-muted);">完全本地运行，数据不出境。需要先安装并启动 Ollama，推荐使用 qwen2.5 模型。</p>
+              <div class="code-block">
+                <pre class="p-3 text-xs font-mono" style="color: var(--text);" set:html={codeEngineOllama}></pre>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- Cache -->
+      <section id="cache" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">缓存</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">缓存策略</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
+          LspProxy 采用三级缓存架构，已翻译的内容会被缓存，后续请求直接从缓存返回，毫秒级响应。
+        </p>
+
+        <div class="space-y-3 mb-6">
+          <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <div class="flex-shrink-0">
+              <span class="tag border-green-900/30" style="color: var(--green);">~μs</span>
+            </div>
+            <div>
+              <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 1: 内存 LRU 缓存</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">最快，微秒级。使用 LRU 算法，默认限制 50MB。进程重启后清空。</p>
+            </div>
+          </div>
+          <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <div class="flex-shrink-0">
+              <span class="tag border-blue-900/30" style="color: var(--blue);">~ms</span>
+            </div>
+            <div>
+              <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 2: 磁盘 JSON 词典</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">毫秒级。持久化存储，进程重启后仍可用。存储在 dict.json 文件中。</p>
+            </div>
+          </div>
+          <div class="flex gap-4 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+            <div class="flex-shrink-0">
+              <span class="tag border-purple-900/30" style="color: var(--purple);">~网络</span>
+            </div>
+            <div>
+              <p class="text-xs font-mono font-semibold mb-1" style="color: var(--text-heading);">Level 3: 在线翻译 API</p>
+              <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">网络请求。50ms 超时快速路径，超时后透传原文并后台预热缓存。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Neovim -->
+      <section id="neovim" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">编辑器</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">Neovim</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          使用 nvim-lspconfig，将 LSP 命令替换为 LspProxy 包装器：
+        </p>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">nvim/lua/config/lsp.lua</span>
+          </div>
+          <pre class="p-4 text-xs font-mono leading-relaxed" set:html={codeNeovim}></pre>
+        </div>
+      </section>
+
+      <!-- VSCode -->
+      <section id="vscode" class="mb-16 scroll-mt-20">
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">VSCode</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          VSCode 不直接支持修改 LSP 命令，需要通过 wrapper 脚本：
+        </p>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">/usr/local/bin/rust-analyzer-proxy.sh</span>
+          </div>
+          <pre class="p-4 text-xs font-mono" set:html={codeVscodeScript}></pre>
+        </div>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">.vscode/settings.json</span>
+          </div>
+          <pre class="p-4 text-xs font-mono" set:html={codeVscodeSettings}></pre>
+        </div>
+
+        <p class="text-xs font-mono" style="color: var(--text-dim);">
+          记得给脚本添加执行权限：<code style="color: var(--text-heading);">chmod +x /usr/local/bin/rust-analyzer-proxy.sh</code>
+        </p>
+      </section>
+
+      <!-- Zed -->
+      <section id="zed" class="mb-16 scroll-mt-20">
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">Zed</h2>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">~/.config/zed/settings.json</span>
+          </div>
+          <pre class="p-4 text-xs font-mono" set:html={codeZed}></pre>
+        </div>
+      </section>
+
+      <!-- Emacs -->
+      <section id="emacs" class="mb-16 scroll-mt-20">
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">Emacs</h2>
+
+        <div class="code-block mb-4">
+          <div class="flex items-center gap-2 px-4 py-2 border-b" style="border-color: var(--border);">
+            <span class="text-xs font-mono" style="color: var(--text-dim);">init.el</span>
+          </div>
+          <pre class="p-4 text-xs font-mono" set:html={codeEmacs}></pre>
+        </div>
+      </section>
+
+      <!-- TUI -->
+      <section id="tui" class="mb-16 scroll-mt-20">
+        <div class="flex items-center gap-2 mb-6">
+          <span class="tag">高级</span>
+        </div>
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">TUI 管理界面</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          LspProxy 内置了基于 Bubble Tea 的 TUI 管理界面，可实时查看翻译日志和管理配置：
+        </p>
+
+        <div class="code-block mb-4">
+          <pre class="p-4 text-xs font-mono" set:html={codeTui}></pre>
+        </div>
+
+        <div class="p-4 border rounded font-mono text-xs" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+          <div class="mb-2" style="color: var(--text-muted);">┌─ LspProxy TUI ──────────────────────────────────┐</div>
+          <div style="color: var(--text-muted);">│  <span style="color: var(--green);">●</span> rust-analyzer  <span style="color: var(--text-dim);">· 运行中</span>                    │</div>
+          <div style="color: var(--text-muted);">│                                                  │</div>
+          <div style="color: var(--text-muted);">│  <span style="color: var(--text);">最近翻译：</span>                                       │</div>
+          <div style="color: var(--text-muted);">│  <span style="color: var(--blue);">[hover]</span> Returns a reference... → 返回引用...    │</div>
+          <div style="color: var(--text-muted);">│  <span style="color: var(--blue);">[hover]</span> Creates a new instance → 创建一个新实例 │</div>
+          <div style="color: var(--text-muted);">│                                                  │</div>
+          <div style="color: var(--text-muted);">│  [q] 退出   [c] 配置   [l] 日志                   │</div>
+          <div style="color: var(--text-muted);">└──────────────────────────────────────────────────┘</div>
+        </div>
+      </section>
+
+      <!-- Architecture -->
+      <section id="architecture" class="mb-16 scroll-mt-20">
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">架构原理</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
+          LspProxy 采用严格的分层架构，关注点严格分离：
+        </p>
+
+        <div class="overflow-x-auto mb-6">
+          <table class="w-full text-xs font-mono border-collapse">
+            <thead>
+              <tr class="border-b" style="border-color: var(--border);">
+                <th class="text-left py-2 px-3 font-normal section-label" style="color: var(--text-dim);">层级</th>
+                <th class="text-left py-2 px-3 font-normal section-label" style="color: var(--text-dim);">目录</th>
+                <th class="text-left py-2 px-3 font-normal section-label" style="color: var(--text-dim);">职责</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { layer: 'CLI',      dir: 'cmd/',                  desc: '参数解析、组件装配' },
+                { layer: '配置',     dir: 'internal/config/',      desc: 'YAML 加载/保存' },
+                { layer: 'LSP',      dir: 'internal/lsp/',         desc: 'JSON-RPC 帧读写' },
+                { layer: '翻译',     dir: 'internal/translate/',   desc: '三级缓存 + API 调用' },
+                { layer: 'Markdown', dir: 'internal/markdown/',    desc: '文本/代码分割' },
+                { layer: '代理',     dir: 'internal/proxy/',       desc: '双向消息转发' },
+                { layer: 'TUI',      dir: 'tui/',                  desc: 'Bubble Tea 界面' },
+              ].map(row => (
+                <tr class="border-b doc-table-row transition-colors" style="border-color: var(--bg-secondary);">
+                  <td class="py-2 px-3" style="color: var(--text-heading);">{row.layer}</td>
+                  <td class="py-2 px-3" style="color: var(--green);">{row.dir}</td>
+                  <td class="py-2 px-3" style="color: var(--text-dim);">{row.desc}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Contributing -->
+      <section id="contributing" class="mb-16 scroll-mt-20">
+        <h2 class="text-xl font-mono font-bold mb-4" style="color: var(--text-heading);">贡献指南</h2>
+
+        <p class="text-sm font-mono leading-relaxed mb-4" style="color: var(--text-muted);">
+          欢迎提交 PR！开发前请先阅读代码规范。
+        </p>
+
+        <div class="code-block mb-4">
+          <pre class="p-4 text-xs font-mono leading-relaxed" set:html={codeContributing}></pre>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <div class="lg:ml-60">
+    <Footer />
+  </div>
+</BaseLayout>
+
+<style>
+  /* 侧边栏导航链接 hover 样式 */
+  .doc-nav-link:hover {
+    color: var(--text-heading);
+    background: var(--nav-hover-bg);
+  }
+
+  /* 侧边栏导航链接选中态 — 蓝色左边框 + 蓝色淡背景 */
+  .doc-nav-link.active-nav {
+    color: var(--nav-active-text);
+    background: var(--nav-active-bg);
+    border-left: 2px solid var(--nav-active-border);
+    padding-left: 6px;
+    font-weight: 500;
+  }
+
+  /* 侧边栏 GitHub 链接 hover */
+  .sidebar-github:hover {
+    color: var(--text-heading);
+  }
+
+  /* 架构表格行 hover */
+  .doc-table-row:hover {
+    background: var(--bg-secondary);
+  }
+</style>
+
+<script is:inline>
+  // 高亮当前滚动到的 section
+  (function () {
+    var sections = document.querySelectorAll('section[id]');
+    var navLinks = document.querySelectorAll('aside nav a.doc-nav-link');
+
+    var observer = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            navLinks.forEach(function (link) {
+              link.classList.remove('active-nav');
+              if (link.getAttribute('href') === '#' + entry.target.id) {
+                link.classList.add('active-nav');
+              }
+            });
+          }
+        });
+      },
+      { rootMargin: '-20% 0px -70% 0px' }
+    );
+
+    sections.forEach(function (section) { observer.observe(section); });
+  })();
+</script>

@@ -1,0 +1,273 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    /* ── Dark 主题（默认） ────────────────────── */
+    :root {
+        --bg: #0a0a0a;
+        --bg-secondary: #111111;
+        --bg-card: #141414;
+        --bg-inset: #0f0f0f;
+        --border: #1e1e1e;
+        --border-hover: #2e2e2e;
+        --border-subtle: #1a1a1a;
+        --text: #d4d4d4;
+        --text-heading: #f5f5f5;
+        --text-muted: #737373;
+        --text-dim: #404040;
+        --text-inverse: #0a0a0a;
+        --green: #22c55e;
+        --blue: #3b82f6;
+        --orange: #f97316;
+        --purple: #a855f7;
+        --yellow: #eab308;
+
+        /* 代码高亮 — Material Palenight */
+        --code-keyword: #c792ea;
+        --code-string: #c3e88d;
+        --code-comment: #546e7a;
+        --code-func: #82aaff;
+        --code-var: #f07178;
+        --code-num: #f78c6c;
+        --code-type: #ffcb6b;
+        --code-op: #89ddff;
+
+        /* 选区 / 滚动条 */
+        --selection-bg: #333333;
+        --selection-fg: #ffffff;
+        --scrollbar-thumb: #2e2e2e;
+
+        /* 按钮 */
+        --btn-primary-bg: #f5f5f5;
+        --btn-primary-fg: #0a0a0a;
+        --btn-primary-hover: #e5e5e5;
+        --btn-secondary-fg: #a3a3a3;
+        --btn-secondary-hover-border: #525252;
+        --btn-secondary-hover-fg: #f5f5f5;
+
+        /* 网格背景 */
+        --grid-line: rgba(255, 255, 255, 0.03);
+
+        /* 代码窗口圆点 */
+        --dot: #333333;
+
+        /* 侧边栏导航选中态 */
+        --nav-active-bg: rgba(59, 130, 246, 0.1);
+        --nav-active-text: #60a5fa;
+        --nav-active-border: #3b82f6;
+        --nav-hover-bg: rgba(255, 255, 255, 0.05);
+
+        /* 警告框 */
+        --warn-border: rgba(234, 179, 8, 0.2);
+        --warn-bg: #111111;
+        --warn-text: #eab308;
+    }
+
+    /* ── Light 主题 ───────────────────────────── */
+    html.light {
+        --bg: #ffffff;
+        --bg-secondary: #f9fafb;
+        --bg-card: #f3f4f6;
+        --bg-inset: #f9fafb;
+        --border: #e5e7eb;
+        --border-hover: #d1d5db;
+        --border-subtle: #f3f4f6;
+        --text: #374151;
+        --text-heading: #111827;
+        --text-muted: #6b7280;
+        --text-dim: #9ca3af;
+        --text-inverse: #ffffff;
+        --green: #16a34a;
+        --blue: #2563eb;
+        --orange: #ea580c;
+        --purple: #9333ea;
+        --yellow: #ca8a04;
+
+        /* 代码高亮 — light 友好色调 */
+        --code-keyword: #7c3aed;
+        --code-string: #059669;
+        --code-comment: #9ca3af;
+        --code-func: #2563eb;
+        --code-var: #dc2626;
+        --code-num: #ea580c;
+        --code-type: #b45309;
+        --code-op: #0891b2;
+
+        --selection-bg: #dbeafe;
+        --selection-fg: #1e3a5f;
+        --scrollbar-thumb: #d1d5db;
+
+        --btn-primary-bg: #111827;
+        --btn-primary-fg: #ffffff;
+        --btn-primary-hover: #1f2937;
+        --btn-secondary-fg: #4b5563;
+        --btn-secondary-hover-border: #9ca3af;
+        --btn-secondary-hover-fg: #111827;
+
+        --grid-line: rgba(0, 0, 0, 0.04);
+
+        --dot: #d1d5db;
+
+        --nav-active-bg: rgba(37, 99, 235, 0.08);
+        --nav-active-text: #2563eb;
+        --nav-active-border: #2563eb;
+        --nav-hover-bg: rgba(0, 0, 0, 0.04);
+
+        --warn-border: rgba(234, 179, 8, 0.25);
+        --warn-bg: #fffbeb;
+        --warn-text: #b45309;
+    }
+
+    /* ── 全局基础 ──────────────────────────────── */
+    * {
+        border-color: var(--border);
+    }
+
+    html {
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: "Inter", system-ui, sans-serif;
+        scroll-behavior: smooth;
+        transition:
+            background-color 0.2s ease,
+            color 0.2s ease;
+    }
+
+    body {
+        background-color: var(--bg);
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    ::selection {
+        background: var(--selection-bg);
+        color: var(--selection-fg);
+    }
+
+    ::-webkit-scrollbar {
+        width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+        background: var(--bg);
+    }
+    ::-webkit-scrollbar-thumb {
+        background: var(--scrollbar-thumb);
+        border-radius: 3px;
+    }
+}
+
+/* ── 组件层 ──────────────────────────────────── */
+@layer components {
+    .font-mono {
+        font-family: "JetBrains Mono", "Fira Code", monospace;
+    }
+
+    .grid-bg {
+        background-image:
+            linear-gradient(var(--grid-line) 1px, transparent 1px),
+            linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+        background-size: 64px 64px;
+    }
+
+    .glow-text {
+        text-shadow: 0 0 40px rgba(255, 255, 255, 0.1);
+    }
+    html.light .glow-text {
+        text-shadow: none;
+    }
+
+    .card-hover {
+        transition:
+            border-color 0.2s,
+            background-color 0.2s,
+            box-shadow 0.2s;
+    }
+    .card-hover:hover {
+        border-color: var(--border-hover);
+        background-color: var(--bg-secondary);
+    }
+    html.light .card-hover:hover {
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+
+    .tag {
+        @apply inline-flex items-center px-2 py-0.5 text-xs font-mono rounded border;
+        background: var(--bg-card);
+        border-color: var(--border);
+        color: var(--text-muted);
+        letter-spacing: 0.05em;
+    }
+
+    .btn-primary {
+        @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-mono font-medium rounded;
+        @apply transition-all duration-150;
+        background: var(--btn-primary-bg);
+        color: var(--btn-primary-fg);
+    }
+    .btn-primary:hover {
+        background: var(--btn-primary-hover);
+    }
+
+    .btn-secondary {
+        @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-mono font-medium rounded border;
+        @apply transition-all duration-150;
+        background: transparent;
+        color: var(--btn-secondary-fg);
+        border-color: var(--border);
+    }
+    .btn-secondary:hover {
+        border-color: var(--btn-secondary-hover-border);
+        color: var(--btn-secondary-hover-fg);
+    }
+}
+
+/* ── 工具类 ──────────────────────────────────── */
+.section-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+
+.code-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    overflow: hidden;
+}
+.code-block pre {
+    padding: 20px 24px;
+    overflow-x: auto;
+}
+
+/* 语法高亮 */
+.syntax-keyword {
+    color: var(--code-keyword);
+}
+.syntax-string {
+    color: var(--code-string);
+}
+.syntax-comment {
+    color: var(--code-comment);
+}
+.syntax-func {
+    color: var(--code-func);
+}
+.syntax-var {
+    color: var(--code-var);
+}
+.syntax-num {
+    color: var(--code-num);
+}
+.syntax-type {
+    color: var(--code-type);
+}
+.syntax-op {
+    color: var(--code-op);
+}

@@ -1,17 +1,539 @@
 ---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
 
+const lspServers = ['rust-analyzer', 'clangd', 'gopls', 'pyright', 'tsserver', 'lua_ls', 'jdtls', 'kotlin-ls', 'cssls', 'html', 'jsonls', 'marksman', 'taplo', 'zls', 'eslint'];
+const lspScrollItems = [...lspServers, ...lspServers];
+
+const engines = ['google', 'openai', 'deepseek', 'qwen', 'ollama'];
+
+const features = [
+  {
+    num: '01',
+    title: '透明代理',
+    desc: '零侵入插入编辑器与 LSP 之间。LSP 协议帧完整保留，仅翻译文档字段。',
+    extra: '编辑器 → LspProxy → rust-analyzer',
+    extraType: 'text',
+  },
+  {
+    num: '02',
+    title: '三级缓存',
+    desc: '内存 LRU → 磁盘 JSON 词典 → 在线 API。已翻译内容毫秒级响应。',
+    extra: '',
+    extraType: 'cache',
+  },
+  {
+    num: '03',
+    title: '快速路径',
+    desc: '50ms 超时快速返回，同时后台预热缓存。不影响编辑器响应速度。',
+    extra: '≤ 50ms 快速路径超时',
+    extraType: 'highlight',
+  },
+  {
+    num: '04',
+    title: '多翻译引擎',
+    desc: 'Google 免费 API、OpenAI、DeepSeek、Qwen、Ollama 本地模型，一键切换。',
+    extra: '',
+    extraType: 'engines',
+  },
+  {
+    num: '05',
+    title: '代码保护',
+    desc: 'Markdown 分割：代码块替换为占位符 $CODE_N$ 后翻译，不误译技术内容。',
+    extra: '文本 + $CODE_0$ → 翻译 → 恢复',
+    extraType: 'text',
+  },
+  {
+    num: '06',
+    title: 'TUI 管理界面',
+    desc: '内置 Bubble Tea TUI，实时查看翻译日志、管理配置，无需重启。',
+    extra: '$ LspProxy --tui',
+    extraType: 'text',
+  },
+];
+
+const configFeatures = [
+  { key: 'engine', val: 'openai / deepseek / google / ollama' },
+  { key: 'timeout', val: '50ms 快速路径 + 600ms 等待窗口' },
+  { key: 'cache', val: '内存 LRU + 磁盘 JSON 词典' },
+  { key: 'log', val: '日志仅写文件，不污染 LSP 帧' },
+];
+
+const engineRows = [
+  { engine: 'google', cost: '免费', privacy: '云端', quality: '一般', config: '无需', costColor: 'text-green-400' },
+  { engine: 'deepseek', cost: '低价', privacy: '云端', quality: '优秀', config: 'API Key', costColor: 'text-blue-400' },
+  { engine: 'openai', cost: '付费', privacy: '云端', quality: '优秀', config: 'API Key', costColor: 'text-yellow-400' },
+  { engine: 'qwen', cost: '低价', privacy: '云端', quality: '良好', config: 'API Key', costColor: 'text-blue-400' },
+  { engine: 'ollama', cost: '免费', privacy: '本地', quality: '可变', config: '本地部署', costColor: 'text-green-400' },
+];
+
+const archSteps = [
+  {
+    step: '1',
+    title: 'LSP 响应拦截',
+    desc: 'forwardLspToClient goroutine 接收 LSP 的 JSON-RPC 响应，识别 hover / completion / diagnostics 消息类型。',
+    color: 'text-blue-400',
+  },
+  {
+    step: '2',
+    title: '三级缓存查询',
+    desc: '依次查询：① 内存 LRU（微秒级） ② 磁盘 JSON 词典（毫秒级） ③ 在线翻译 API（网络请求）。',
+    color: 'text-green-400',
+  },
+  {
+    step: '3',
+    title: '50ms 快速路径',
+    desc: '若缓存未命中，设置 50ms 超时，超时后立即透传原文，同时后台预热缓存。',
+    color: 'text-yellow-400',
+  },
+  {
+    step: '4',
+    title: 'Markdown 分割翻译',
+    desc: '调用 markdown.Split()，仅翻译 KindText 片段，KindCode 代码块原样保留，防止误译。',
+    color: 'text-purple-400',
+  },
+];
+
+const heroCodeHtml = `<span class="syntax-comment">-- Neovim 配置示例</span>
+<span class="syntax-keyword">require</span>(<span class="syntax-string">'lspconfig'</span>).<span class="syntax-var">rust_analyzer</span>.<span class="syntax-func">setup</span>({
+  <span class="syntax-var">cmd</span> = {
+    <span class="syntax-string">&quot;LspProxy&quot;</span>,               <span class="syntax-comment">-- 代理层</span>
+    <span class="syntax-string">&quot;--&quot;</span>,
+    <span class="syntax-string">&quot;rust-analyzer&quot;</span>,           <span class="syntax-comment">-- 真实 LSP</span>
+  },
+  <span class="syntax-var">settings</span> = {
+    <span class="syntax-comment">-- 其余配置保持不变...</span>
+  }
+})`;
+
+const configCodeHtml = `<span class="syntax-comment"># LspProxy 配置文件</span>
+
+<span class="syntax-var">engine</span>: <span class="syntax-string">deepseek</span>        <span class="syntax-comment"># 翻译引擎</span>
+
+<span class="syntax-var">openai</span>:
+  <span class="syntax-var">api_key</span>: <span class="syntax-string">&quot;sk-...&quot;</span>
+  <span class="syntax-var">base_url</span>: <span class="syntax-string">&quot;https://api.deepseek.com&quot;</span>
+  <span class="syntax-var">model</span>: <span class="syntax-string">&quot;deepseek-chat&quot;</span>
+
+<span class="syntax-var">cache</span>:
+  <span class="syntax-var">memory_limit</span>: <span class="syntax-num">52428800</span>  <span class="syntax-comment"># 50MB</span>
+  <span class="syntax-var">dict_path</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/dict.json&quot;</span>
+
+<span class="syntax-var">timeout</span>:
+  <span class="syntax-var">fast_path</span>: <span class="syntax-string">&quot;50ms&quot;</span>
+  <span class="syntax-var">wait_window</span>: <span class="syntax-string">&quot;600ms&quot;</span>
+
+<span class="syntax-var">log</span>:
+  <span class="syntax-var">level</span>: <span class="syntax-string">&quot;info&quot;</span>
+  <span class="syntax-var">file</span>: <span class="syntax-string">&quot;~/.cache/LspProxy/proxy.log&quot;</span>`;
+
+const nvimCodeHtml = `<span class="syntax-keyword">require</span>(<span class="syntax-string">'lspconfig'</span>).<span class="syntax-var">rust_analyzer</span>.<span class="syntax-func">setup</span>({
+  <span class="syntax-var">cmd</span> = { <span class="syntax-string">&quot;LspProxy&quot;</span>, <span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;rust-analyzer&quot;</span> },
+})`;
+
+const vscodeCodeHtml = `{
+  <span class="syntax-string">&quot;rust-analyzer.server.path&quot;</span>:
+    <span class="syntax-string">&quot;/usr/local/bin/lsp-proxy-ra.sh&quot;</span>
+}
+
+<span class="syntax-comment"># lsp-proxy-ra.sh:</span>
+<span class="syntax-var">LspProxy</span> -- rust-analyzer <span class="syntax-string">&quot;$@&quot;</span>`;
+
+const zedCodeHtml = `{
+  <span class="syntax-string">&quot;lsp&quot;</span>: {
+    <span class="syntax-string">&quot;rust-analyzer&quot;</span>: {
+      <span class="syntax-string">&quot;binary&quot;</span>: {
+        <span class="syntax-string">&quot;path&quot;</span>: <span class="syntax-string">&quot;LspProxy&quot;</span>,
+        <span class="syntax-string">&quot;arguments&quot;</span>: [<span class="syntax-string">&quot;--&quot;</span>, <span class="syntax-string">&quot;rust-analyzer&quot;</span>]
+      }
+    }
+  }
+}`;
+
+const emacsCodeHtml = `<span class="syntax-comment">;; lsp-mode</span>
+(<span class="syntax-keyword">setq</span> lsp-rust-analyzer-server-command
+  '(<span class="syntax-string">&quot;LspProxy&quot;</span> <span class="syntax-string">&quot;--&quot;</span> <span class="syntax-string">&quot;rust-analyzer&quot;</span>))`;
+
+const archDiagramHtml = `<span class="text-neutral-500">编辑器 stdin</span>
+  <span class="text-neutral-700">──►</span> <span class="text-blue-400">[forwardClientToLsp]</span>
+    <span class="text-neutral-700">──►</span> <span class="text-neutral-500">lsp stdin</span>
+
+<span class="text-neutral-500">编辑器 stdout</span>
+  <span class="text-neutral-700">◄──</span> <span class="text-green-400">[forwardLspToClient]</span>
+    <span class="text-neutral-700">◄──</span> <span class="text-neutral-500">lsp stdout</span>
+
+        <span class="text-yellow-400">↑ 翻译处理在此</span>
+        <span class="text-neutral-600">仅修改文档字段</span>
+        <span class="text-neutral-600">协议帧完整透传</span>`;
+
+const installCmd = 'go install github.com/zerx-lab/LspProxy@latest';
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+<BaseLayout>
+  <Nav />
+
+  <main class="pt-14">
+    <!-- ── Hero ────────────────────────────────────────── -->
+    <section class="relative min-h-[85vh] flex flex-col items-center justify-center px-4 overflow-hidden">
+      <div class="absolute inset-0 grid-bg opacity-50"></div>
+      <div class="absolute inset-0" style="background: linear-gradient(to bottom, transparent, transparent, var(--bg));"></div>
+
+      <div class="relative z-10 max-w-4xl mx-auto text-center">
+        <!-- Badge -->
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 mb-8 rounded border text-xs font-mono" style="border-color: var(--border); background: var(--bg-secondary); color: var(--text-muted);">
+          <span class="w-1.5 h-1.5 rounded-full animate-pulse" style="background-color: var(--green);"></span>
+          <span>Go 编写 · 零侵入 · MIT 开源</span>
+        </div>
+
+        <!-- Heading -->
+        <h1 class="text-4xl sm:text-5xl md:text-6xl font-mono font-bold leading-tight tracking-tight mb-6 glow-text" style="color: var(--text-heading);">
+          LSP 文档<br />
+          <span style="color: var(--text-muted);">实时翻译</span>
+        </h1>
+
+        <p class="text-sm sm:text-base font-mono max-w-xl mx-auto leading-relaxed mb-10" style="color: var(--text-muted);">
+          透明代理插入编辑器与 LSP 之间，<br />
+          将 hover、completion、diagnostics 中的英文文档<br />
+          <span style="color: var(--text);">实时翻译为中文</span>，零侵入，零配置。
+        </p>
+
+        <!-- Install command -->
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-8">
+          <div class="flex items-center gap-3 px-4 py-3 border rounded font-mono text-sm overflow-x-auto max-w-full" style="background: var(--bg-secondary); border-color: var(--border);">
+            <span class="flex-shrink-0" style="color: var(--text-dim);">$</span>
+            <span class="flex-shrink-0" style="color: var(--text);">go install</span>
+            <span class="flex-shrink-0" style="color: var(--green);" id="install-text">github.com/zerx-lab/LspProxy@latest</span>
+          </div>
+          <button
+            id="copy-install"
+            class="btn-secondary text-xs py-2.5 px-4 whitespace-nowrap"
+            data-cmd={installCmd}
+          >
+            复制
+          </button>
+        </div>
+
+        <!-- CTA -->
+        <div class="flex items-center justify-center gap-4">
+          <a href="/docs" class="btn-primary">查看文档 →</a>
+          <a href="https://github.com/zerx-lab/LspProxy" target="_blank" rel="noopener noreferrer" class="btn-secondary">GitHub</a>
+        </div>
+      </div>
+
+      <!-- Demo code window -->
+      <div class="relative z-10 mt-16 w-full max-w-2xl mx-auto">
+        <div class="code-block">
+          <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+            <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+            <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+            <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+            <span class="ml-2 text-xs font-mono" style="color: var(--text-dim);">~/.config/nvim/lua/lsp.lua</span>
+          </div>
+          <pre class="p-5 text-xs leading-relaxed overflow-x-auto"><code set:html={heroCodeHtml} /></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Scrolling LSP strip ──────────────────────────── -->
+    <section class="py-8 border-y overflow-hidden" style="border-color: var(--border-subtle);">
+      <div class="section-label text-center mb-4">支持的 LSP 服务端</div>
+      <div class="scroll-mask relative flex overflow-hidden">
+        <div class="flex gap-3 animate-scroll-left whitespace-nowrap">
+          {lspScrollItems.map(lsp => (
+            <span class="tag flex-shrink-0">{lsp}</span>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Features Grid ────────────────────────────────── -->
+    <section class="py-24 px-4">
+      <div class="max-w-6xl mx-auto">
+        <div class="mb-12">
+          <p class="section-label mb-2">功能特性</p>
+          <h2 class="text-2xl md:text-3xl font-mono font-bold" style="color: var(--text-heading);">专为中文开发者设计</h2>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px rounded-lg overflow-hidden" style="background: var(--border-subtle); border: 1px solid var(--border-subtle);">
+          {features.map(f => (
+            <div class="p-6 card-hover" style="background: var(--bg);">
+              <p class="section-label mb-3">{f.num}</p>
+              <h3 class="font-mono font-semibold mb-2" style="color: var(--text-heading);">{f.title}</h3>
+              <p class="text-xs leading-relaxed font-mono" style="color: var(--text-dim);">{f.desc}</p>
+              {f.extraType === 'text' && (
+                <div class="mt-4 p-3 border rounded text-xs font-mono" style="background: var(--bg-inset); border-color: var(--border-subtle); color: var(--text-muted);">
+                  {f.extra}
+                </div>
+              )}
+              {f.extraType === 'cache' && (
+                <div class="mt-4 flex gap-1 items-center">
+                  <span class="tag" style="color: var(--green); border-color: rgba(34, 197, 94, 0.2);">内存</span>
+                  <span class="text-xs" style="color: var(--text-dim);">→</span>
+                  <span class="tag" style="color: var(--blue); border-color: rgba(59, 130, 246, 0.2);">磁盘</span>
+                  <span class="text-xs" style="color: var(--text-dim);">→</span>
+                  <span class="tag" style="color: var(--purple); border-color: rgba(168, 85, 247, 0.2);">在线</span>
+                </div>
+              )}
+              {f.extraType === 'highlight' && (
+                <div class="mt-4 p-3 border rounded text-xs font-mono" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+                  <span style="color: var(--green);">≤ 50ms</span>
+                  <span style="color: var(--text-dim);"> 快速路径超时</span>
+                </div>
+              )}
+              {f.extraType === 'engines' && (
+                <div class="mt-4 flex flex-wrap gap-1">
+                  {engines.map(e => (
+                    <span class="tag">{e}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Declarative Config ──────────────────────────── -->
+    <section class="py-24 px-4 border-t" style="border-color: var(--border-subtle);">
+      <div class="max-w-6xl mx-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+          <div>
+            <p class="section-label mb-3">声明式配置</p>
+            <h2 class="text-2xl md:text-3xl font-mono font-bold mb-4" style="color: var(--text-heading);">
+              YAML 配置，<br />开箱即用
+            </h2>
+            <p class="text-sm font-mono leading-relaxed mb-6" style="color: var(--text-muted);">
+              单一配置文件控制所有行为：翻译引擎、缓存策略、超时设定、日志级别。修改立即生效，无需重启编辑器。
+            </p>
+            <div class="space-y-3">
+              {configFeatures.map(item => (
+                <div class="flex items-start gap-3 text-xs font-mono">
+                  <span class="mt-0.5" style="color: var(--green);">✓</span>
+                  <div>
+                    <span style="color: var(--text-heading);">{item.key}</span>
+                    <span style="color: var(--text-dim);"> — {item.val}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+              <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+              <div class="w-2.5 h-2.5 rounded-full" style="background: var(--dot);"></div>
+              <span class="ml-2 text-xs font-mono" style="color: var(--text-dim);">~/.config/LspProxy/config.yaml</span>
+            </div>
+            <pre class="p-5 text-xs leading-relaxed overflow-x-auto"><code set:html={configCodeHtml} /></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Editor Integrations ───────────────────────────── -->
+    <section class="py-24 px-4 border-t" style="border-color: var(--border-subtle);">
+      <div class="max-w-6xl mx-auto">
+        <div class="mb-12">
+          <p class="section-label mb-2">编辑器集成</p>
+          <h2 class="text-2xl md:text-3xl font-mono font-bold" style="color: var(--text-heading);">支持主流编辑器</h2>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <!-- Neovim -->
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <span class="text-xs font-mono" style="color: var(--text-dim);">Neovim</span>
+              <span class="ml-auto tag">nvim-lspconfig</span>
+            </div>
+            <pre class="p-5 text-xs leading-relaxed"><code set:html={nvimCodeHtml} /></pre>
+          </div>
+
+          <!-- VSCode -->
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <span class="text-xs font-mono" style="color: var(--text-dim);">VSCode</span>
+              <span class="ml-auto tag">settings.json</span>
+            </div>
+            <pre class="p-5 text-xs leading-relaxed"><code set:html={vscodeCodeHtml} /></pre>
+          </div>
+
+          <!-- Zed -->
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <span class="text-xs font-mono" style="color: var(--text-dim);">Zed</span>
+              <span class="ml-auto tag">settings.json</span>
+            </div>
+            <pre class="p-5 text-xs leading-relaxed"><code set:html={zedCodeHtml} /></pre>
+          </div>
+
+          <!-- Emacs -->
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <span class="text-xs font-mono" style="color: var(--text-dim);">Emacs</span>
+              <span class="ml-auto tag">lsp-mode</span>
+            </div>
+            <pre class="p-5 text-xs leading-relaxed"><code set:html={emacsCodeHtml} /></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Architecture ──────────────────────────────────── -->
+    <section class="py-24 px-4 border-t" style="border-color: var(--border-subtle);">
+      <div class="max-w-6xl mx-auto">
+        <div class="mb-12">
+          <p class="section-label mb-2">架构原理</p>
+          <h2 class="text-2xl md:text-3xl font-mono font-bold" style="color: var(--text-heading);">透明双向代理</h2>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
+          <div class="code-block">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color: var(--border);">
+              <span class="text-xs font-mono" style="color: var(--text-dim);">数据流向</span>
+            </div>
+            <pre class="p-5 text-sm leading-loose font-mono"><code set:html={archDiagramHtml} /></pre>
+          </div>
+
+          <div class="space-y-4">
+            {archSteps.map(item => (
+              <div class="flex gap-4 p-4 border rounded card-hover" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+                <span class:list={['font-mono font-bold text-sm flex-shrink-0 mt-0.5', item.color]}>{item.step}</span>
+                <div>
+                  <p class="font-mono font-medium text-sm mb-1" style="color: var(--text-heading);">{item.title}</p>
+                  <p class="text-xs font-mono leading-relaxed" style="color: var(--text-dim);">{item.desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Engines Comparison ───────────────────────────── -->
+    <section class="py-24 px-4 border-t" style="border-color: var(--border-subtle);">
+      <div class="max-w-6xl mx-auto">
+        <div class="mb-12">
+          <p class="section-label mb-2">翻译引擎</p>
+          <h2 class="text-2xl md:text-3xl font-mono font-bold" style="color: var(--text-heading);">按需选择引擎</h2>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs font-mono border-collapse">
+            <thead>
+              <tr class="border-b" style="border-color: var(--border);">
+                <th class="text-left py-3 px-4 font-normal section-label">引擎</th>
+                <th class="text-left py-3 px-4 font-normal section-label">费用</th>
+                <th class="text-left py-3 px-4 font-normal section-label">隐私</th>
+                <th class="text-left py-3 px-4 font-normal section-label">质量</th>
+                <th class="text-left py-3 px-4 font-normal section-label">配置</th>
+              </tr>
+            </thead>
+            <tbody>
+              {engineRows.map(row => (
+                <tr class="border-b table-row-hover transition-colors" style="border-color: var(--bg-secondary);">
+                  <td class="py-3 px-4" style="color: var(--text-heading);">{row.engine}</td>
+                  <td class:list={['py-3 px-4', row.costColor]}>{row.cost}</td>
+                  <td class="py-3 px-4" style="color: var(--text-muted);">{row.privacy}</td>
+                  <td class="py-3 px-4" style="color: var(--text);">{row.quality}</td>
+                  <td class="py-3 px-4" style="color: var(--text-dim);">{row.config}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-8 p-4 border rounded" style="background: var(--bg-inset); border-color: var(--border-subtle);">
+          <p class="text-xs font-mono mb-2 section-label">切换引擎</p>
+          <code class="text-xs font-mono">
+            <span style="color: var(--text-dim);">$</span>
+            <span style="color: var(--text-heading);"> LspProxy </span>
+            <span style="color: var(--green);">-e deepseek</span>
+            <span style="color: var(--text-dim);"> -- rust-analyzer</span>
+          </code>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── CTA ──────────────────────────────────────────── -->
+    <section class="py-24 px-4 border-t" style="border-color: var(--border-subtle);">
+      <div class="max-w-4xl mx-auto text-center">
+        <p class="section-label mb-4">立即开始</p>
+        <h2 class="text-3xl md:text-4xl font-mono font-bold mb-4 glow-text" style="color: var(--text-heading);">
+          用中文理解代码，<br />从今天开始。
+        </h2>
+        <p class="text-sm font-mono mb-10" style="color: var(--text-dim);">
+          一行命令安装，三行配置启用。
+        </p>
+
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-10">
+          <div class="px-4 py-3 border rounded font-mono text-sm" style="background: var(--bg-secondary); border-color: var(--border);">
+            <span style="color: var(--text-dim);">$ </span>
+            <span style="color: var(--green);">go install github.com/zerx-lab/LspProxy@latest</span>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-center gap-6 text-xs font-mono" style="color: var(--text-dim);">
+          <a href="https://github.com/zerx-lab/LspProxy" class="cta-link flex items-center gap-1">
+            GitHub
+          </a>
+          <span style="color: var(--text-dim);">·</span>
+          <a href="/docs" class="cta-link">
+            文档
+          </a>
+          <span style="color: var(--text-dim);">·</span>
+          <span>MIT License</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</BaseLayout>
+
+<style>
+  .scroll-mask {
+    mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+  }
+
+  @keyframes scroll-left {
+    0% {
+      transform: translateX(0);
+    }
+    100% {
+      transform: translateX(-50%);
+    }
+  }
+
+  .animate-scroll-left {
+    animation: scroll-left 25s linear infinite;
+  }
+
+  .table-row-hover:hover {
+    background-color: var(--bg-secondary);
+  }
+
+  .cta-link {
+    transition: color 0.15s ease;
+  }
+  .cta-link:hover {
+    color: var(--text-heading);
+  }
+</style>
+
+<script>
+  const btn = document.getElementById('copy-install');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const cmd = btn.getAttribute('data-cmd') || '';
+      navigator.clipboard.writeText(cmd).then(() => {
+        btn.textContent = '已复制';
+        setTimeout(() => {
+          btn.textContent = '复制';
+        }, 2000);
+      });
+    });
+  }
+</script>

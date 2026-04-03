@@ -52,7 +52,10 @@ func New(cfg *config.Config) (Engine, error) {
 		dictPath = config.DefaultDictFile()
 	}
 
-	disk, err := NewDiskDict(dictPath)
+	// 磁盘词典最大条目数（0 表示不限制）
+	dictMaxEntries := cfg.Proxy.DictMaxEntries
+
+	disk, err := NewDiskDict(dictPath, dictMaxEntries)
 	if err != nil {
 		// 磁盘词典初始化失败时降级为纯内存缓存，不影响代理正常运行
 		return NewCachedEngine(base, memoryLimit), nil

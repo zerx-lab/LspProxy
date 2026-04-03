@@ -773,6 +773,10 @@ func (h *Handler) translateSignatureHelp(ctx context.Context, result json.RawMes
 }
 
 // translateDiagnostics 翻译 textDocument/publishDiagnostics 的参数。
+//
+// 诊断消息使用"模板化翻译"策略：先提取动态标识符（变量名、类型名等），
+// 翻译模板后再还原标识符。这使得 "variable 'foo' is unused" 和
+// "variable 'bar' is unused" 共享同一个模板缓存条目。
 func (h *Handler) translateDiagnostics(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 	if len(params) == 0 || string(params) == "null" {
 		return params, nil
@@ -793,7 +797,7 @@ func (h *Handler) translateDiagnostics(ctx context.Context, params json.RawMessa
 			return params, ctx.Err()
 		}
 
-		translated, err := h.translateText(ctx, p.Diagnostics[i].Message)
+		translated, err := h.translateDiagMessage(ctx, p.Diagnostics[i].Message)
 		if err != nil {
 			h.logger.Warn("翻译诊断消息失败",
 				slog.String("message", truncate(p.Diagnostics[i].Message, 80)),
@@ -809,6 +813,43 @@ func (h *Handler) translateDiagnostics(ctx context.Context, params json.RawMessa
 		return params, fmt.Errorf("序列化翻译后的 PublishDiagnosticsParams 失败: %w", err)
 	}
 	return out, nil
+}
+
+// translateDiagMessage 使用模板化策略翻译单条诊断消息。
+//
+// 流程：
+//  1. 提取引号/反引号包裹的标识符，替换为 $ID_N$ 占位符
+//  2. 翻译模板文本（共享模板级缓存，大幅提升命中率）
+//  3. 还原占位符为原始标识符
+//
+// 若消息不含标识符，退回到标准 [translateText] 翻译。
+func (h *Handler) translateDiagMessage(ctx context.Context, message string) (string, error) {
+	tmpl := translate.Templatize(message)
+
+	if !tmpl.IsTemplated {
+		// 无标识符，走标准翻译路径
+		return h.translateText(ctx, message)
+	}
+
+	h.logger.Debug("诊断消息模板化",
+		slog.Int("identifiers", len(tmpl.Identifiers)),
+		slog.String("template", truncate(tmpl.Template, 80)),
+	)
+
+	// 翻译模板（模板作为缓存 key，命中率远高于包含动态标识符的原始消息）
+	translated, err := h.translateText(ctx, tmpl.Template)
+	if err != nil {
+		// 模板翻译失败，尝试直接翻译原文（降级）
+		h.logger.Debug("模板翻译失败，退回原文翻译",
+			slog.String("error", err.Error()),
+		)
+		return h.translateText(ctx, message)
+	}
+
+	// 还原标识符
+	result := translate.RestoreIdentifiers(translated, tmpl.Identifiers)
+
+	return result, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -870,15 +911,24 @@ func (h *Handler) translateMarkupContent(ctx context.Context, raw json.RawMessag
 	return raw, nil
 }
 
+// paragraphSep 是 Markdown 段落的分隔符（两个换行）
+const paragraphSep = "\n\n"
+
+// minParagraphSplitLen 是触发段落级拆分的最小文本长度。
+// 短文本（如单行诊断消息）不拆分，避免无意义的拆分开销。
+const minParagraphSplitLen = 120
+
 // translateText 翻译一段文本。
 //
-// 采用"占位符替换法"（Placeholder Substitution）：
+// 采用"占位符替换法 + 段落级缓存"策略：
 //  1. 调用 [markdown.Protect] 将代码块替换为编号占位符（$CODE_N$），得到纯文本
-//  2. 将带占位符的完整文本作为一个整体发送给翻译引擎（保留上下文，翻译质量更高）
-//  3. 调用 [markdown.Restore] 将占位符还原为原始代码块
+//  2. 若 masked 文本包含多个段落（以 \n\n 分隔），则按段落拆分并独立翻译，
+//     每个段落作为独立的缓存 key，提高跨文档的缓存复用率
+//  3. 对于短文本或单段落文本，仍作为整体翻译（保留完整上下文）
+//  4. 调用 [markdown.Restore] 将占位符还原为原始代码块
 //
-// 相比旧的"分段翻译"方案，此方案能正确处理代码块与文字混排在同一行的情况，
-// 避免翻译结果中代码块与文字发生错位。
+// 段落级缓存的收益：不同函数/类型的 hover 文档中，相同的描述段落
+// （如 "Parameters:"、"Returns:" 等固定模式）可直接命中缓存。
 func (h *Handler) translateText(ctx context.Context, text string) (string, error) {
 	if text == "" {
 		return text, nil
@@ -894,7 +944,7 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 		return "", ctx.Err()
 	}
 
-	// 第一步：用占位符保护代码块，得到可安全翻译的纯文本
+	// ── 第一步：用占位符保护代码块 ──
 	masked, codes := markdown.Protect(text)
 
 	h.logger.Debug("占位符保护完成",
@@ -907,8 +957,18 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 		return text, nil
 	}
 
-	// 第二步：将带占位符的整体文本发送给翻译引擎
-	translated, err := h.engine.Translate(ctx, masked, h.targetLang)
+	// ── 第二步：段落级拆分翻译 / 整体翻译 ──
+	var translated string
+	var err error
+
+	paragraphs := strings.Split(masked, paragraphSep)
+	// 多段落且文本足够长时启用段落级翻译
+	if len(paragraphs) > 1 && len(masked) >= minParagraphSplitLen {
+		translated, err = h.translateParagraphs(ctx, paragraphs)
+	} else {
+		translated, err = h.engine.Translate(ctx, masked, h.targetLang)
+	}
+
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -920,7 +980,7 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 		return text, err
 	}
 
-	// 第三步：还原占位符为原始代码块
+	// ── 第三步：还原占位符为原始代码块 ──
 	result := markdown.Restore(translated, codes)
 
 	h.logger.Debug("占位符还原完成",
@@ -929,6 +989,73 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 	)
 
 	return result, nil
+}
+
+// translateParagraphs 将多个段落分别翻译并拼接，每个段落作为独立的缓存单元。
+//
+// 策略：
+//   - 纯空白段落：原样保留（保持段落间距）
+//   - 纯占位符段落（如 "$CODE_0$"）：跳过翻译，原样保留
+//   - 其余段落：独立调用翻译引擎（各自作为缓存 key）
+//
+// 翻译失败的段落保留原文（局部降级，不影响其他段落的翻译结果）。
+func (h *Handler) translateParagraphs(ctx context.Context, paragraphs []string) (string, error) {
+	results := make([]string, len(paragraphs))
+
+	// 段落翻译失败计数
+	failCount := 0
+
+	for i, para := range paragraphs {
+		// 检查 context 是否已取消
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		trimmed := strings.TrimSpace(para)
+
+		// 空白段落原样保留
+		if trimmed == "" {
+			results[i] = para
+			continue
+		}
+
+		// 纯占位符段落（仅包含 $CODE_N$ 占位符和空白）跳过翻译
+		if isPlaceholderOnly(trimmed) {
+			results[i] = para
+			continue
+		}
+
+		// 翻译该段落
+		translated, err := h.engine.Translate(ctx, para, h.targetLang)
+		if err != nil {
+			h.logger.Debug("段落翻译失败，保留原文",
+				slog.Int("paragraph", i+1),
+				slog.String("error", err.Error()),
+				slog.String("preview", truncate(para, 60)),
+			)
+			results[i] = para // 局部降级
+			failCount++
+			continue
+		}
+		results[i] = translated
+	}
+
+	if failCount > 0 {
+		h.logger.Debug("段落级翻译部分失败",
+			slog.Int("total", len(paragraphs)),
+			slog.Int("failed", failCount),
+		)
+	}
+
+	return strings.Join(results, paragraphSep), nil
+}
+
+// isPlaceholderOnly 判断文本是否仅由占位符（$CODE_N$）和空白组成。
+// 用于跳过纯代码块段落的翻译。
+func isPlaceholderOnly(text string) bool {
+	// 移除所有占位符后，若剩余内容全为空白则认为是纯占位符段落
+	cleaned := markdown.PlaceholderRe().ReplaceAllString(text, "")
+	return strings.TrimSpace(cleaned) == ""
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

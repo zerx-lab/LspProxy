@@ -43,6 +43,9 @@ type ProxyConfig struct {
 	// DictFile 磁盘词典文件路径，默认 ~/.local/share/lsp-proxy/dict.json
 	// 词典作为二级持久化缓存：内存未命中时查磁盘，磁盘未命中才调用在线翻译
 	DictFile string `mapstructure:"dict_file"`
+	// DictMaxEntries 磁盘词典最大条目数，超出时按访问顺序 LRU 驱逐最久未访问的条目。
+	// 默认 100000 条；0 表示不限制容量（词典无限增长）。
+	DictMaxEntries int `mapstructure:"dict_max_entries"`
 	// TranslationTimeout 翻译等待超时时间（毫秒）。
 	// 0 表示无限等待直到翻译完成或出错；其他正值为最大等待毫秒数。
 	// 超时后立即返回原文并在后台继续翻译以预热缓存。
@@ -98,6 +101,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.target_lang", "zh-CN")
 	v.SetDefault("proxy.cache_size", 30) // 单位 MB
 	v.SetDefault("proxy.dict_file", DefaultDictFile())
+	v.SetDefault("proxy.dict_max_entries", 100000) // 磁盘词典最大条目数
 	v.SetDefault("proxy.translation_timeout", 600) // 单位毫秒，0 表示无限等待
 
 	// 日志默认配置
@@ -190,6 +194,7 @@ func (c *Config) Save(path string) error {
 	v.Set("proxy.target_lang", c.Proxy.TargetLang)
 	v.Set("proxy.cache_size", c.Proxy.CacheSize)
 	v.Set("proxy.dict_file", c.Proxy.DictFile)
+	v.Set("proxy.dict_max_entries", c.Proxy.DictMaxEntries)
 	v.Set("proxy.translation_timeout", c.Proxy.TranslationTimeout)
 	v.Set("log.level", c.Log.Level)
 	v.Set("log.file", c.Log.File)

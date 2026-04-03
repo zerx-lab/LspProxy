@@ -1,0 +1,55 @@
+---
+// 主题切换按钮 — 纯 CSS 变量 + localStorage
+---
+
+<button
+  id="theme-toggle"
+  class="relative flex items-center justify-center w-8 h-8 rounded border transition-colors duration-150"
+  style="border-color: var(--border); color: var(--text-muted);"
+  aria-label="切换主题"
+>
+  <!-- 太阳（light 模式显示） -->
+  <svg class="theme-icon-sun w-4 h-4 hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="5" />
+    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+  </svg>
+  <!-- 月亮（dark 模式显示） -->
+  <svg class="theme-icon-moon w-4 h-4 hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+    <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" />
+  </svg>
+</button>
+
+<script is:inline>
+  // 初始化主题 — 在 DOM 解析前立即执行，避免闪烁
+  (function() {
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isDark = saved ? saved === 'dark' : prefersDark;
+
+    if (!isDark) {
+      document.documentElement.classList.add('light');
+    }
+
+    function updateIcons() {
+      const isLight = document.documentElement.classList.contains('light');
+      document.querySelectorAll('.theme-icon-sun').forEach(el => {
+        el.style.display = isLight ? 'block' : 'none';
+      });
+      document.querySelectorAll('.theme-icon-moon').forEach(el => {
+        el.style.display = isLight ? 'none' : 'block';
+      });
+    }
+
+    // DOM ready 后绑定事件
+    document.addEventListener('DOMContentLoaded', () => {
+      updateIcons();
+
+      document.getElementById('theme-toggle')?.addEventListener('click', () => {
+        const html = document.documentElement;
+        const isLight = html.classList.toggle('light');
+        localStorage.setItem('theme', isLight ? 'light' : 'dark');
+        updateIcons();
+      });
+    });
+  })();
+</script>
