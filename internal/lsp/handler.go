@@ -1522,6 +1522,38 @@ func isLetterRune(r rune) bool {
 	return false
 }
 
+// isCJKRune 判断一个 rune 是否属于 CJK 汉字基本区（中文常用字符范围）。
+func isCJKRune(r rune) bool {
+	return r >= 0x4E00 && r <= 0x9FFF
+}
+
+// isMostlyChinese 判断经过占位符保护后的文本是否已主要由中文字符构成。
+//
+// 策略：统计文本中 CJK 汉字数量与全部字母性字符数量的比值，
+// 若 CJK 占比超过 60%，则认为文本已是中文，无需再次翻译。
+//
+// 例如：
+//   - "返回当前节点的父节点。"     → true（全部为汉字）
+//   - "Returns the parent node."  → false（全部为 ASCII 字母）
+//   - "获取 value，returns item." → false（中文占比不足 60%）
+//
+// 注意：应在 markdown.Protect 之后调用，避免代码块内容干扰统计。
+func isMostlyChinese(masked string) bool {
+	var letterCount, cjkCount int
+	for _, r := range masked {
+		if isLetterRune(r) {
+			letterCount++
+			if isCJKRune(r) {
+				cjkCount++
+			}
+		}
+	}
+	if letterCount == 0 {
+		return false
+	}
+	return float64(cjkCount)/float64(letterCount) >= 0.6
+}
+
 // hasTranslatableWords 判断经过占位符保护后的纯文字部分是否含有"词语性"内容。
 //
 // 策略：扫描 masked 字符串，若存在连续 2 个及以上的 Unicode 字母（含汉字），
@@ -1842,6 +1874,14 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 		return text, nil
 	}
 
+	// 若文本已主要由中文字符构成，无需翻译，直接返回原文
+	if isMostlyChinese(masked) {
+		h.logger.Debug("文本已是中文，跳过翻译",
+			slog.String("preview", truncate(masked, 80)),
+		)
+		return text, nil
+	}
+
 	// ── 第二步：段落级拆分翻译 / 整体翻译 ──
 	var translated string
 	var err error
@@ -1987,6 +2027,12 @@ func (h *Handler) translateParagraphs(ctx context.Context, paragraphs []string) 
 
 		// 纯占位符段落（仅包含 $CODE_N$ 占位符和空白）跳过翻译
 		if isPlaceholderOnly(trimmed) {
+			results[i] = para
+			continue
+		}
+
+		// 已是中文的段落跳过翻译
+		if isMostlyChinese(para) {
 			results[i] = para
 			continue
 		}
