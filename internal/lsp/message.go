@@ -80,13 +80,46 @@ type HoverResult struct {
 }
 
 // CompletionItem 表示自动补全列表中的一个条目。
+// 注意：必须保留所有 LSP 规范字段，否则序列化时会丢弃控制光标行为的关键信息。
 type CompletionItem struct {
 	// Label 补全项显示标签（在列表中展示的文本）
 	Label string `json:"label"`
-	// Documentation 补全项的详细文档，可以是 string 或 MarkupContent
-	Documentation json.RawMessage `json:"documentation,omitempty"`
+	// LabelDetails 标签的额外细节（LSP 3.17+）
+	LabelDetails json.RawMessage `json:"labelDetails,omitempty"`
+	// Kind 补全类型（1=Text, 2=Method, 3=Function, ...）
+	Kind int `json:"kind,omitempty"`
+	// Tags 补全标签（1=Deprecated）
+	Tags json.RawMessage `json:"tags,omitempty"`
 	// Detail 补全项的简短描述（通常显示在标签右侧）
 	Detail string `json:"detail,omitempty"`
+	// Documentation 补全项的详细文档，可以是 string 或 MarkupContent
+	Documentation json.RawMessage `json:"documentation,omitempty"`
+	// Deprecated 是否已废弃（旧版，建议用 Tags 代替）
+	Deprecated bool `json:"deprecated,omitempty"`
+	// Preselect 是否预先选中此条目
+	Preselect bool `json:"preselect,omitempty"`
+	// SortText 排序用文本（缺省时使用 Label）
+	SortText string `json:"sortText,omitempty"`
+	// FilterText 过滤用文本（缺省时使用 Label）
+	FilterText string `json:"filterText,omitempty"`
+	// InsertText 实际插入的文本（缺省时使用 Label）
+	InsertText string `json:"insertText,omitempty"`
+	// InsertTextFormat 插入文本格式：1=PlainText, 2=Snippet（含占位符和光标控制）
+	InsertTextFormat int `json:"insertTextFormat,omitempty"`
+	// InsertTextMode 插入时的空白处理模式（LSP 3.16+）
+	InsertTextMode int `json:"insertTextMode,omitempty"`
+	// TextEdit 精确替换操作，优先级高于 InsertText（控制光标位置的关键字段）
+	TextEdit json.RawMessage `json:"textEdit,omitempty"`
+	// TextEditText 当 TextEdit 为 InsertReplaceEdit 时使用（LSP 3.16+）
+	TextEditText string `json:"textEditText,omitempty"`
+	// AdditionalTextEdits 补全后额外的文本编辑（如自动添加 import）
+	AdditionalTextEdits json.RawMessage `json:"additionalTextEdits,omitempty"`
+	// CommitCharacters 触发提交的字符列表
+	CommitCharacters json.RawMessage `json:"commitCharacters,omitempty"`
+	// Command 补全后自动执行的命令（如触发签名帮助）
+	Command json.RawMessage `json:"command,omitempty"`
+	// Data 供 completionItem/resolve 请求使用的扩展数据
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // CompletionList 对应 textDocument/completion 请求的响应结果。
