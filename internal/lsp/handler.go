@@ -40,11 +40,13 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zerx-lab/LspProxy/internal/config"
@@ -61,6 +63,18 @@ const cacheCheckTimeout = 50 * time.Millisecond
 
 // asyncDiagTimeout 是后台异步翻译诊断的最长等待时间。
 const asyncDiagTimeout = 30 * time.Second
+
+// bgConcurrencyLimit 限制同时进行的后台翻译 goroutine 数量。
+// 设为 3：允许适度并行，同时避免短时间内打出大量 API 请求触发限流。
+const bgConcurrencyLimit = 3
+
+// rateLimitCooldown 是收到 rate limit 错误后的熔断冷却期。
+// API 限流窗口通常为 1 分钟，30s 冷却足以覆盖大多数恢复场景。
+const rateLimitCooldown = 30 * time.Second
+
+// errBgSkipped 是并发上限或熔断期间跳过后台翻译时写入结果 channel 的哨兵错误。
+// 接收方见到此错误时应静默返回原文，不视为翻译失败。
+var errBgSkipped = errors.New("后台翻译已跳过（并发限制或熔断保护）")
 
 // ─────────────────────────────────────────────────────────────────────────────
 // pending 请求信息（用于响应时反查请求上下文）
@@ -116,6 +130,14 @@ type Handler struct {
 	// refreshIDs 记录已发出但尚未收到响应的 refresh 请求 ID 集合。
 	// 编辑器对这些请求的响应会被静默丢弃，不进入 pending 映射。
 	refreshIDs map[string]struct{}
+
+	// ── 后台翻译并发控制 ────────────────────────────────────────────────
+	// bgSema 是容量为 bgConcurrencyLimit 的信号量 channel，限制同时进行的后台翻译数量。
+	// 非阻塞 tryStartBg 获取，releaseBg 释放。
+	bgSema chan struct{}
+	// rateLimitUntil 存储 rate limit 熔断的截止时间（Unix 纳秒），0 表示无熔断。
+	// 使用 atomic 保证多 goroutine 并发写安全，无需加锁。
+	rateLimitUntil atomic.Int64
 }
 
 // NewHandler 创建并返回一个新的 Handler 实例。
@@ -139,7 +161,56 @@ func NewHandler(engine translate.Engine, targetLang string, logger *slog.Logger,
 		translationTimeout: timeout,
 		refreshID:          0,
 		refreshIDs:         make(map[string]struct{}),
+		bgSema:             make(chan struct{}, bgConcurrencyLimit),
 	}
+}
+
+// tryStartBg 非阻塞地尝试获取后台翻译信号量。
+// 返回 false 时表示以下两种情况之一：
+//   - 已达并发上限（bgConcurrencyLimit 个翻译正在进行）
+//   - 处于 rate limit 熔断冷却期
+//
+// 返回 false 时调用方应立即将 errBgSkipped 写入结果 channel，
+// 防止 channel 接收方（Phase 1 / Phase 2 / drain goroutine）永久阻塞。
+func (h *Handler) tryStartBg() bool {
+	if h.isRateLimited() {
+		return false
+	}
+	select {
+	case h.bgSema <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseBg 释放后台翻译信号量，必须与成功的 tryStartBg 配对调用。
+func (h *Handler) releaseBg() {
+	<-h.bgSema
+}
+
+// isRateLimited 报告当前是否处于 rate limit 熔断冷却期。
+func (h *Handler) isRateLimited() bool {
+	until := h.rateLimitUntil.Load()
+	return until != 0 && time.Now().UnixNano() < until
+}
+
+// onRateLimitError 收到 API rate limit 错误时触发熔断，
+// 在 rateLimitCooldown 内阻止所有新后台翻译 goroutine 启动，防止雪崩。
+// 使用原子写，可在多个 goroutine 中安全并发调用。
+func (h *Handler) onRateLimitError() {
+	h.rateLimitUntil.Store(time.Now().Add(rateLimitCooldown).UnixNano())
+}
+
+// isRateLimitError 判断 err 是否为 API 限流错误。
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many requests")
 }
 
 // idKey 将 json.RawMessage 形式的 ID 转换为可用作 map key 的字符串。
@@ -402,11 +473,30 @@ func (h *Handler) handleResponseWithFastPath(
 	ch := make(chan translateResult, 1)
 	// bgCtx 不受超时控制：即使主路径超时返回原文，翻译仍继续以填充缓存
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), asyncDiagTimeout)
-	go func() {
-		defer bgCancel()
-		r, err := translateFn(bgCtx)
-		ch <- translateResult{result: r, err: err}
-	}()
+
+	if !h.tryStartBg() {
+		// 并发已满或处于 rate limit 熔断期：跳过本次翻译。
+		// 立即将哨兵错误写入 ch，Phase 1 会在 50ms 内读到并返回原文，
+		// 避免主路径无谓等待 translationTimeout，也防止 drain goroutine 泄漏。
+		bgCancel()
+		ch <- translateResult{err: errBgSkipped}
+		h.logger.Debug("跳过后台翻译（限流保护）",
+			slog.String("method", shortMethod(info.Method)),
+			slog.String("file", uriBasename(info.URI)),
+			slog.Bool("rate_limited", h.isRateLimited()),
+			slog.Int("bg_active", len(h.bgSema)),
+		)
+	} else {
+		go func() {
+			defer h.releaseBg()
+			defer bgCancel()
+			r, err := translateFn(bgCtx)
+			if isRateLimitError(err) {
+				h.onRateLimitError()
+			}
+			ch <- translateResult{result: r, err: err}
+		}()
+	}
 
 	// ── 第一阶段：cacheCheckTimeout（50ms）等待缓存命中 ──
 	select {
@@ -414,6 +504,10 @@ func (h *Handler) handleResponseWithFastPath(
 		elapsed := time.Since(start)
 		if res.err == nil {
 			return h.buildTranslatedResponse(ctx, msg, raw, info, res.result, elapsed, "缓存命中")
+		}
+		// 跳过翻译（限流保护），静默返回原文
+		if errors.Is(res.err, errBgSkipped) {
+			return raw, nil
 		}
 		// 翻译报错，直接返回原文（不进入第二阶段）
 		h.logger.Warn("翻译失败，返回原文",
@@ -477,6 +571,9 @@ func (h *Handler) handleResponseWithFastPath(
 					slog.String("elapsed", fmtDuration(time.Since(start))),
 				)
 			} else {
+				if isRateLimitError(res.err) {
+					h.onRateLimitError()
+				}
 				h.logger.Warn("后台缓存预热失败",
 					slog.String("method", shortMethod(info.Method)),
 					slog.String("file", uriBasename(info.URI)),
@@ -637,11 +734,26 @@ func (h *Handler) handleDiagnosticsAsync(
 	}
 	diagCh := make(chan diagResult, 1)
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), asyncDiagTimeout)
-	go func() {
-		defer bgCancel()
-		newParams, err := h.translateDiagnostics(bgCtx, msgCopy.Params)
-		diagCh <- diagResult{params: newParams, err: err}
-	}()
+
+	if !h.tryStartBg() {
+		bgCancel()
+		diagCh <- diagResult{err: errBgSkipped}
+		h.logger.Debug("跳过诊断后台翻译（限流保护）",
+			slog.String("file", fileName),
+			slog.Bool("rate_limited", h.isRateLimited()),
+			slog.Int("bg_active", len(h.bgSema)),
+		)
+	} else {
+		go func() {
+			defer h.releaseBg()
+			defer bgCancel()
+			newParams, err := h.translateDiagnostics(bgCtx, msgCopy.Params)
+			if isRateLimitError(err) {
+				h.onRateLimitError()
+			}
+			diagCh <- diagResult{params: newParams, err: err}
+		}()
+	}
 
 	// 将翻译结果序列化并通过 asyncPush 推送的辅助闭包
 	pushTranslated := func(newParams json.RawMessage, elapsed time.Duration, hitKind string) ([]byte, error) {
@@ -679,6 +791,12 @@ func (h *Handler) handleDiagnosticsAsync(
 	case res := <-diagCh:
 		elapsed := time.Since(start)
 		if res.err != nil {
+			if errors.Is(res.err, errBgSkipped) {
+				return raw, nil
+			}
+			if isRateLimitError(res.err) {
+				h.onRateLimitError()
+			}
 			h.logger.Warn("诊断翻译失败，返回原文",
 				slog.String("file", fileName),
 				slog.String("error", res.err.Error()),
@@ -711,6 +829,9 @@ func (h *Handler) handleDiagnosticsAsync(
 	case res := <-diagCh:
 		elapsed = time.Since(start)
 		if res.err != nil {
+			if isRateLimitError(res.err) {
+				h.onRateLimitError()
+			}
 			h.logger.Warn("诊断翻译失败，返回原文",
 				slog.String("file", fileName),
 				slog.String("error", res.err.Error()),
@@ -737,6 +858,9 @@ func (h *Handler) handleDiagnosticsAsync(
 			bgStart := time.Now()
 			res := <-diagCh
 			if res.err != nil {
+				if isRateLimitError(res.err) {
+					h.onRateLimitError()
+				}
 				h.logger.Warn("后台异步翻译诊断失败",
 					slog.String("file", fileName),
 					slog.Int("count", diagCount),
@@ -943,11 +1067,26 @@ func (h *Handler) handleDiagnosticPullResponse(
 
 	ch := make(chan translateResult, 1)
 	bgCtx, bgCancel := context.WithTimeout(context.Background(), asyncDiagTimeout)
-	go func() {
-		defer bgCancel()
-		r, err := h.translateDocumentDiagnosticReport(bgCtx, msg.Result)
-		ch <- translateResult{result: r, err: err}
-	}()
+
+	if !h.tryStartBg() {
+		bgCancel()
+		ch <- translateResult{err: errBgSkipped}
+		h.logger.Debug("跳过拉取式诊断后台翻译（限流保护）",
+			slog.String("file", uriBasename(info.URI)),
+			slog.Bool("rate_limited", h.isRateLimited()),
+			slog.Int("bg_active", len(h.bgSema)),
+		)
+	} else {
+		go func() {
+			defer h.releaseBg()
+			defer bgCancel()
+			r, err := h.translateDocumentDiagnosticReport(bgCtx, msg.Result)
+			if isRateLimitError(err) {
+				h.onRateLimitError()
+			}
+			ch <- translateResult{result: r, err: err}
+		}()
+	}
 
 	// ── 第一阶段：50ms 快速缓存路径 ──
 	select {
@@ -955,6 +1094,12 @@ func (h *Handler) handleDiagnosticPullResponse(
 		elapsed := time.Since(start)
 		if res.err == nil {
 			return h.buildTranslatedResponse(ctx, msg, raw, info, res.result, elapsed, "缓存命中")
+		}
+		if errors.Is(res.err, errBgSkipped) {
+			return raw, nil
+		}
+		if isRateLimitError(res.err) {
+			h.onRateLimitError()
 		}
 		h.logger.Warn("拉取式诊断翻译失败，返回原文",
 			slog.String("file", uriBasename(info.URI)),
@@ -980,6 +1125,9 @@ func (h *Handler) handleDiagnosticPullResponse(
 		if res.err == nil {
 			return h.buildTranslatedResponse(ctx, msg, raw, info, res.result, elapsed, "等待完成")
 		}
+		if isRateLimitError(res.err) {
+			h.onRateLimitError()
+		}
 		h.logger.Warn("拉取式诊断翻译失败，返回原文",
 			slog.String("file", uriBasename(info.URI)),
 			slog.String("error", res.err.Error()),
@@ -999,6 +1147,9 @@ func (h *Handler) handleDiagnosticPullResponse(
 		go func() {
 			res := <-ch
 			if res.err != nil {
+				if isRateLimitError(res.err) {
+					h.onRateLimitError()
+				}
 				h.logger.Warn("后台拉取式诊断翻译失败，无法触发刷新",
 					slog.String("file", uriBasename(info.URI)),
 					slog.String("error", res.err.Error()),
@@ -1222,6 +1373,23 @@ func (h *Handler) composeDiagBilingual(original, translated string) string {
 // 使用 --- 水平线，在 markdown hover 渲染器中会显示为视觉分隔。
 const bilingualSeparator = "\n\n---\n\n"
 
+// isAllCode 判断文本是否全为代码块（Protect 后无可翻译文本）。
+//
+// 用于 bilingual / bilingual_compare 模式的提前退出：纯代码内容无需翻译，
+// 也不应做双语拼接——直接返回原始消息即可。
+//
+// 注意：空文本不视为"全代码"，由调用方单独处理。
+func isAllCode(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	masked, _ := markdown.Protect(text)
+	// 使用 hasTranslatableWords 判断：它会先移除 $CODE_N$ 占位符，
+	// 因此对于纯代码块内容（masked = "$CODE_0$"）能正确返回 true。
+	// 直接检查 masked == "" 是错误的——代码块替换后 masked 非空，只含占位符。
+	return !hasTranslatableWords(masked)
+}
+
 // composeBilingual 按 DisplayMode 将原文与译文组合成最终展示文本。
 //
 // 三种模式的处理逻辑：
@@ -1255,7 +1423,7 @@ func composeBilingualMode(original, translated string) string {
 	}
 	// 检查原文是否全为代码块（占位符保护后没有可翻译文本）
 	masked, _ := markdown.Protect(original)
-	if strings.TrimSpace(masked) == "" {
+	if !hasTranslatableWords(masked) {
 		return translated
 	}
 	// 组装：译文 + 分隔线 + 原文
@@ -1511,6 +1679,10 @@ func (h *Handler) translateMarkupContent(ctx context.Context, raw json.RawMessag
 	// 情况1：纯字符串
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
+		// 双语模式下，纯代码内容无需翻译也不做双语拼接
+		if h.displayMode != config.DisplayTranslationOnly && isAllCode(str) {
+			return raw, nil
+		}
 		original := str
 		translated, err := h.translateText(ctx, str)
 		if err != nil {
@@ -1532,6 +1704,10 @@ func (h *Handler) translateMarkupContent(ctx context.Context, raw json.RawMessag
 	// 情况2：MarkupContent 对象
 	var mc MarkupContent
 	if err := json.Unmarshal(raw, &mc); err == nil && mc.Kind != "" {
+		// 双语模式下，纯代码内容无需翻译也不做双语拼接
+		if h.displayMode != config.DisplayTranslationOnly && isAllCode(mc.Value) {
+			return raw, nil
+		}
 		original := mc.Value
 		translated, err := h.translateText(ctx, mc.Value)
 		if err != nil {
@@ -1573,6 +1749,10 @@ func (h *Handler) translateMarkupContentCompare(ctx context.Context, raw json.Ra
 	// 情况1：纯字符串
 	var str string
 	if err := json.Unmarshal(raw, &str); err == nil {
+		// 纯代码内容无需翻译也不做双语拼接
+		if isAllCode(str) {
+			return raw, nil
+		}
 		final, err := translateAndBuild(str)
 		if err != nil {
 			return raw, err
@@ -1591,6 +1771,10 @@ func (h *Handler) translateMarkupContentCompare(ctx context.Context, raw json.Ra
 	// 情况2：MarkupContent 对象
 	var mc MarkupContent
 	if err := json.Unmarshal(raw, &mc); err == nil && mc.Kind != "" {
+		// 纯代码内容无需翻译也不做双语拼接
+		if isAllCode(mc.Value) {
+			return raw, nil
+		}
 		final, err := translateAndBuild(mc.Value)
 		if err != nil {
 			return raw, err
@@ -1653,8 +1837,8 @@ func (h *Handler) translateText(ctx context.Context, text string) (string, error
 		slog.String("masked_preview", truncate(masked, 80)),
 	)
 
-	// 若掩码后文本全为空白，说明原文只有代码块，直接返回原文
-	if strings.TrimSpace(masked) == "" {
+	// 若掩码后文本无可翻译词语，说明原文只有代码块或纯符号，直接返回原文
+	if !hasTranslatableWords(masked) {
 		return text, nil
 	}
 

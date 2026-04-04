@@ -571,14 +571,22 @@ func (m Model) handleConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// 强制保存（部分终端可能拦截，优先用方向键 + Enter）
 		return m.doSaveConfig()
 
-	case "4":
-		return m.switchToPrompt()
-
-	case "5":
-		return m.switchToDict()
-
-	case "6":
-		return m.switchToGlossary()
+	case "4", "5", "6":
+		// 仅在焦点落于保存按钮（非输入框）时才切换标签；
+		// 否则透传给输入框，避免干扰数字输入。
+		if m.focusIdx >= numConfigInputs {
+			switch msg.String() {
+			case "4":
+				return m.switchToPrompt()
+			case "5":
+				return m.switchToDict()
+			case "6":
+				return m.switchToGlossary()
+			}
+		}
+		var cmd tea.Cmd
+		m.inputs[m.focusIdx], cmd = m.inputs[m.focusIdx].Update(msg)
+		return m, cmd
 
 	case "enter":
 		if m.focusIdx == numConfigInputs {

@@ -8,7 +8,7 @@ lsp-proxy
 *.dylib
 *.test
 *.out
-
+CLAUDE.md
 # Go 工具链缓存
 /vendor/
 /dist/
