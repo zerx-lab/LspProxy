@@ -1369,9 +1369,9 @@ func (h *Handler) composeDiagBilingual(original, translated string) string {
 // 双语/对照展示组装
 // ─────────────────────────────────────────────────────────────────────────────
 
-// bilingualSeparator 是双语模式下原文与译文之间的 Markdown 分隔线。
-// 使用 --- 水平线，在 markdown hover 渲染器中会显示为视觉分隔。
-const bilingualSeparator = "\n\n---\n\n"
+// bilingualSeparator 是双语模式下译文与原文之间的分隔标记。
+// 使用 Unicode 重横线（━ U+2501）加粗显示，与 LSP 默认的细 --- 分隔线视觉上明显区分。
+const bilingualSeparator = "\n\n**━━━━━━ 原文 ━━━━━━**\n\n"
 
 // isAllCode 判断文本是否全为代码块（Protect 后无可翻译文本）。
 //
