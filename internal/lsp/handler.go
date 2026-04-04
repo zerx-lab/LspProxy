@@ -177,6 +177,18 @@ func (h *Handler) TrackRequest(msg *BaseMessage) {
 			slog.Int("char", info.Char+1),
 		)
 
+	case "completionItem/resolve":
+		// resolve 请求参数本身就是一个 CompletionItem，取 label 做日志
+		var item struct {
+			Label string `json:"label"`
+		}
+		if err := json.Unmarshal(msg.Params, &item); err == nil {
+			h.logger.Info("LSP 请求触发",
+				slog.String("method", shortMethod(msg.Method)),
+				slog.String("label", item.Label),
+			)
+		}
+
 	case "textDocument/diagnostic":
 		// 拉取式诊断请求只有 URI，没有光标位置
 		var p struct {
@@ -328,6 +340,14 @@ func (h *Handler) processResponse(ctx context.Context, msg *BaseMessage, raw []b
 		return h.handleResponseWithFastPath(ctx, msg, raw, info,
 			func(fastCtx context.Context) (json.RawMessage, error) {
 				return h.translateCompletion(fastCtx, msg.Result)
+			},
+		)
+
+	case "completionItem/resolve":
+		// resolve 请求返回单个 CompletionItem，只翻译其文档字段
+		return h.handleResponseWithFastPath(ctx, msg, raw, info,
+			func(fastCtx context.Context) (json.RawMessage, error) {
+				return h.translateResolvedItem(fastCtx, msg.Result)
 			},
 		)
 
@@ -765,6 +785,38 @@ func (h *Handler) translateHover(ctx context.Context, result json.RawMessage) (j
 	out, err := json.Marshal(hover)
 	if err != nil {
 		return result, fmt.Errorf("序列化翻译后的 HoverResult 失败: %w", err)
+	}
+	return out, nil
+}
+
+// translateResolvedItem 翻译 completionItem/resolve 响应结果。
+// resolve 请求返回单个完整的 CompletionItem，只需翻译其 documentation 字段。
+func (h *Handler) translateResolvedItem(ctx context.Context, result json.RawMessage) (json.RawMessage, error) {
+	if len(result) == 0 || string(result) == "null" {
+		return result, nil
+	}
+
+	var item CompletionItem
+	if err := json.Unmarshal(result, &item); err != nil {
+		return result, nil
+	}
+	if len(item.Documentation) == 0 {
+		return result, nil
+	}
+
+	translated, err := h.translateMarkupContent(ctx, item.Documentation)
+	if err != nil {
+		h.logger.Warn("翻译 resolve 补全文档失败",
+			slog.String("label", item.Label),
+			slog.String("error", err.Error()),
+		)
+		return result, nil
+	}
+	item.Documentation = translated
+
+	out, err := json.Marshal(item)
+	if err != nil {
+		return result, fmt.Errorf("序列化 resolve 后的 CompletionItem 失败: %w", err)
 	}
 	return out, nil
 }
